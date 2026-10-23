@@ -1,0 +1,1311 @@
+#define _GNU_SOURCE
+#include "runtime.h"
+#include "operator_engine.h"
+#include "ast_ir.h"
+#include "numeric_buffer.h"
+#include "native_kernel.h"
+#include <errno.h>
+#include <math.h>
+#include <float.h>
+#include <stdarg.h>
+#include <stdbool.h>
+#include <stdint.h>
+#include <dlfcn.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <stddef.h>
+#include <pthread.h>
+#include <time.h>
+
+typedef enum { V_NULL, V_INT, V_FLOAT, V_BOOL, V_STRING, V_LIST, V_RANGE, V_F64_ARRAY } ValueType;
+typedef struct Value Value;
+typedef struct F64ArrayStorage { size_t refs, length; double *data; } F64ArrayStorage;
+struct Value { ValueType type; union { long long i; double f; int b; char *s; struct { Value *items; size_t count; } list; long long range_end; F64ArrayStorage *array; } as; };
+static int compare_numeric_values(const void *pa,const void *pb){
+ const Value *a=(const Value*)pa,*b=(const Value*)pb;
+ long double x=a->type==V_INT?(long double)a->as.i:(long double)a->as.f;
+ long double y=b->type==V_INT?(long double)b->as.i:(long double)b->as.f;
+ return (x>y)-(x<y);
+}
+typedef struct { size_t refs, capacity; Value items[]; } ListStorage;
+static ListStorage *list_storage(Value v){return (ListStorage*)((char*)v.as.list.items - offsetof(ListStorage,items));}
+static Value list_new(size_t count){
+ Value v={.type=V_LIST};if(count>(SIZE_MAX-sizeof(ListStorage))/sizeof(Value)){v.type=V_NULL;return v;}
+ ListStorage*s=calloc(1,sizeof(ListStorage)+(count?count:1)*sizeof(Value));
+ if(!s){v.type=V_NULL;return v;}s->refs=1;s->capacity=count?count:1;v.as.list.items=s->items;v.as.list.count=count;return v;
+}
+static Value f64_array_new(size_t length){
+ Value v={.type=V_F64_ARRAY};F64ArrayStorage*a=calloc(1,sizeof(*a));
+ if(!a){v.type=V_NULL;return v;}a->refs=1;a->length=length;
+ if(length){if(length>SIZE_MAX/sizeof(double)){free(a);v.type=V_NULL;return v;}void*p=NULL;if(posix_memalign(&p,64,length*sizeof(double))!=0){free(a);v.type=V_NULL;return v;}a->data=p;memset(a->data,0,length*sizeof(double));}
+ v.as.array=a;return v;
+}
+typedef struct Binding { char *name; Value value; struct Binding *next, *hash_next; } Binding;
+typedef struct LocalFrame { Binding *slots; size_t count; Binding *buckets[256]; struct LocalFrame *parent; const Node *owner; } LocalFrame;
+static _Thread_local LocalFrame *local_frame;
+typedef struct FunctionDef {
+ const char *name;
+ const Node *node;
+ struct FunctionDef *next;
+ void *jit_handle;
+ long long (*jit_fn)(long long);
+ int jit_requires_range;
+ PifariExprGraph ir;
+ int ir_ready;
+ PifariNativeKernel *native_kernel;
+ PifariExprGraph indexed_ir;
+ int indexed_ir_ready;
+ PifariNativeKernel *indexed_kernel;
+} FunctionDef;
+static FunctionDef *functions;
+typedef struct ChainKernelCache { char *key; PifariNativeKernel *kernel; struct ChainKernelCache *next; } ChainKernelCache;
+static ChainKernelCache *chain_kernel_cache;
+static pthread_mutex_t chain_kernel_cache_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static _Thread_local Binding *globals;
+#define BINDING_BUCKETS 1024u
+static _Thread_local Binding *binding_buckets[BINDING_BUCKETS];
+static _Thread_local int runtime_failed;
+static _Thread_local int return_active;
+static _Thread_local Value return_value;
+/* Optional counters: disabled by default so normal execution pays only one branch. */
+static int profiling_enabled;
+static unsigned long long profile_eval_nodes, profile_binding_lookups, profile_value_copies, profile_bytecode_ops;
+static void profile_inc(unsigned long long *counter){if(profiling_enabled)__atomic_add_fetch(counter,1,__ATOMIC_RELAXED);}
+
+static Value eval(const Node*n);
+static void exec_node(const Node*n);
+static Binding *clone_bindings(Binding *src);
+static Binding *find_binding(const char *name);
+static Value call_user_function(const Node *call, const Node *definition);
+static void jit_compile_function(FunctionDef *f);
+static void free_value(Value v);
+static void fail(const Node *n,const char *fmt,...);
+static pthread_mutex_t pifari_output_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static char *dup_string(const char *s){size_t n=strlen(s?s:"")+1;char *p=malloc(n);if(!p){perror("malloc");exit(2);}memcpy(p,s?s:"",n);return p;}
+static Value vnull(void){ Value v={.type=V_NULL}; return v; }
+static Value vint(long long n){ Value v={.type=V_INT};v.as.i=n;return v; }
+static Value vfloat(double n){ Value v={.type=V_FLOAT};v.as.f=n;return v; }
+static Value vbool(int n){ Value v={.type=V_BOOL};v.as.b=!!n;return v; }
+static Value vstr(const char*s){ Value v={.type=V_STRING};v.as.s=dup_string(s?s:"");return v; }
+static long long monotonic_ms(void){struct timespec ts;if(clock_gettime(CLOCK_MONOTONIC,&ts)!=0)return 0;return (long long)ts.tv_sec*1000LL+ts.tv_nsec/1000000LL;}
+static long long monotonic_ns(void){struct timespec ts;if(clock_gettime(CLOCK_MONOTONIC,&ts)!=0)return 0;return (long long)ts.tv_sec*1000000000LL+ts.tv_nsec;}
+static void fail(const Node*n,const char*fmt,...){
+ if(runtime_failed)return;
+ runtime_failed=1;
+ fprintf(stderr,"Pifari:%d:%d: erro de execução: ",n?n->line:1,n?n->column:1);
+ va_list ap;va_start(ap,fmt);vfprintf(stderr,fmt,ap);va_end(ap);fputc('\n',stderr);
+}
+static void free_value(Value v){
+ if(v.type==V_STRING)free(v.as.s);
+ if(v.type==V_F64_ARRAY&&v.as.array&&__atomic_sub_fetch(&v.as.array->refs,1,__ATOMIC_ACQ_REL)==0){free(v.as.array->data);free(v.as.array);}
+ if(v.type==V_LIST&&v.as.list.items){
+  ListStorage*s=list_storage(v);
+  if(__atomic_sub_fetch(&s->refs,1,__ATOMIC_ACQ_REL)==0){
+   for(size_t i=0;i<v.as.list.count;i++)free_value(v.as.list.items[i]);
+   free(s);
+  }
+ }
+}
+static Value copy_value(Value v){
+ profile_inc(&profile_value_copies);
+ if(v.type==V_STRING)return vstr(v.as.s);
+ if(v.type==V_F64_ARRAY&&v.as.array)__atomic_add_fetch(&v.as.array->refs,1,__ATOMIC_RELAXED);
+ if(v.type==V_LIST&&v.as.list.items)__atomic_add_fetch(&list_storage(v)->refs,1,__ATOMIC_RELAXED);
+ return v;
+}
+static size_t binding_hash(const char *s){
+ uint64_t h=UINT64_C(1469598103934665603);
+ for(;*s;s++){h^=(unsigned char)*s;h*=UINT64_C(1099511628211);}
+ return (size_t)(h&(BINDING_BUCKETS-1));
+}
+static void rebuild_binding_index(void){
+ memset(binding_buckets,0,sizeof(binding_buckets));
+ for(Binding*b=globals;b;b=b->next){size_t h=binding_hash(b->name);b->hash_next=binding_buckets[h];binding_buckets[h]=b;}
+}
+static Binding *find_binding(const char*n){
+ profile_inc(&profile_binding_lookups);
+ size_t h=binding_hash(n);
+ for(LocalFrame*f=local_frame;f;f=f->parent)
+  for(Binding*b=f->buckets[h&255u];b;b=b->hash_next)if(!strcmp(b->name,n))return b;
+ for(Binding*b=binding_buckets[h];b;b=b->hash_next)if(!strcmp(b->name,n))return b;
+ return NULL;
+}
+static void set_binding(const char*n,Value v,const Node*at,int require_existing){
+ Binding*b=find_binding(n);
+ if(!b&&require_existing){fail(at,"variável '%s' não foi declarada",n);free_value(v);return;}
+ if(!b){b=calloc(1,sizeof(*b));if(!b){fail(at,"memória insuficiente ao criar variável");free_value(v);return;}b->name=dup_string(n);b->next=globals;globals=b;size_t h=binding_hash(n);b->hash_next=binding_buckets[h];binding_buckets[h]=b;}else free_value(b->value);
+ b->value=v;
+}
+static Binding *set_loop_binding(Binding *b,const char *name,Value v,const Node *at){
+ if(b){free_value(b->value);b->value=v;return b;}
+ set_binding(name,v,at,0);
+ return find_binding(name);
+}
+static PifariNativeKernel *chain_kernel_get(Value names, const PifariExprGraph *graph) {
+ size_t key_len=1;
+ for(size_t i=0;i<names.as.list.count;i++)key_len+=strlen(names.as.list.items[i].as.s)+1;
+ char *key=malloc(key_len); if(!key)return NULL; key[0]=0;
+ size_t pos=0;for(size_t i=0;i<names.as.list.count;i++){if(i)key[pos++]=(char)31;size_t n=strlen(names.as.list.items[i].as.s);memcpy(key+pos,names.as.list.items[i].as.s,n);pos+=n;}key[pos]=0;
+ pthread_mutex_lock(&chain_kernel_cache_mutex);
+ for(ChainKernelCache *it=chain_kernel_cache;it;it=it->next)if(!strcmp(it->key,key)){PifariNativeKernel *k=it->kernel;pthread_mutex_unlock(&chain_kernel_cache_mutex);free(key);return k;}
+ PifariNativeKernel *kernel=NULL;
+ if(pifari_native_kernel_create(graph,&kernel)!=0){pthread_mutex_unlock(&chain_kernel_cache_mutex);free(key);return NULL;}
+ ChainKernelCache *entry=calloc(1,sizeof(*entry));
+ if(!entry){pifari_native_kernel_destroy(kernel);pthread_mutex_unlock(&chain_kernel_cache_mutex);free(key);return NULL;}
+ entry->key=key;entry->kernel=kernel;entry->next=chain_kernel_cache;chain_kernel_cache=entry;
+ pthread_mutex_unlock(&chain_kernel_cache_mutex);return kernel;
+}
+static void chain_kernel_cache_clear(void) {
+ pthread_mutex_lock(&chain_kernel_cache_mutex);
+ ChainKernelCache *it=chain_kernel_cache;chain_kernel_cache=NULL;
+ pthread_mutex_unlock(&chain_kernel_cache_mutex);
+ while(it){ChainKernelCache *next=it->next;pifari_native_kernel_destroy(it->kernel);free(it->key);free(it);it=next;}
+}
+static int truthy(Value v){switch(v.type){case V_NULL:return 0;case V_BOOL:return v.as.b;case V_INT:return v.as.i!=0;case V_FLOAT:return v.as.f!=0.0;case V_STRING:return v.as.s[0]!=0;case V_LIST:return v.as.list.count!=0;case V_RANGE:return v.as.range_end>0;case V_F64_ARRAY:return v.as.array&&v.as.array->length>0;}return 0;}
+static double number(Value v,const Node*n){if(v.type==V_INT)return (double)v.as.i;if(v.type==V_FLOAT)return v.as.f;fail(n,"esperado número, recebido tipo %d",v.type);return 0;}
+static char *stringify(Value v){
+ char buf[128];
+ switch(v.type){
+ case V_NULL:return dup_string("Null");
+ case V_BOOL:return dup_string(v.as.b?"true":"false");
+ case V_INT:snprintf(buf,sizeof buf,"%lld",v.as.i);return dup_string(buf);
+ case V_FLOAT:snprintf(buf,sizeof buf,"%.15g",v.as.f);return dup_string(buf);
+ case V_STRING:return dup_string(v.as.s);
+ case V_F64_ARRAY:{size_t cap=32,len=0;char*out=malloc(cap);if(!out)return dup_string("[]");out[len++]='[';for(size_t i=0;i<v.as.array->length;i++){char x[64];int z=snprintf(x,sizeof x,"%s%.15g",i?",":"",v.as.array->data[i]);if(len+(size_t)z+2>cap){cap=(len+(size_t)z+2)*2;char*q=realloc(out,cap);if(!q){free(out);return dup_string("[]");}out=q;}memcpy(out+len,x,(size_t)z);len+=(size_t)z;}out[len++]=']';out[len]=0;return out;}
+ case V_LIST:{size_t cap=32,len=0;char*out=malloc(cap);out[len++]='[';for(size_t i=0;i<v.as.list.count;i++){char*x=stringify(v.as.list.items[i]);size_t z=strlen(x);if(len+z+4>cap){cap=(len+z+4)*2;out=realloc(out,cap);}if(i)out[len++]=',';memcpy(out+len,x,z);len+=z;free(x);}out[len++]=']';out[len]=0;return out;}
+ case V_RANGE:{size_t cap=32,len=0;char*out=malloc(cap);out[len++]='[';for(long long i=0;i<v.as.range_end;i++){char x[32];int z=snprintf(x,sizeof x,"%s%lld",i?",":"",i);if(len+(size_t)z+2>cap){cap=(len+(size_t)z+2)*2;out=realloc(out,cap);}memcpy(out+len,x,(size_t)z);len+=(size_t)z;}out[len++]=']';out[len]=0;return out;}
+ }return dup_string("?");
+}
+static int equal_values(Value a,Value b){
+ if(a.type==b.type){switch(a.type){
+  case V_NULL:return 1;
+  case V_BOOL:return a.as.b==b.as.b;
+  case V_INT:return a.as.i==b.as.i;
+  case V_FLOAT:return a.as.f==b.as.f;
+  case V_STRING:return !strcmp(a.as.s,b.as.s);
+  case V_LIST:
+   if(a.as.list.count!=b.as.list.count)return 0;
+   for(size_t i=0;i<a.as.list.count;i++)if(!equal_values(a.as.list.items[i],b.as.list.items[i]))return 0;
+   return 1;
+  case V_RANGE:return a.as.range_end==b.as.range_end;
+  case V_F64_ARRAY:if(!a.as.array||!b.as.array||a.as.array->length!=b.as.array->length)return 0;for(size_t i=0;i<a.as.array->length;i++)if(a.as.array->data[i]!=b.as.array->data[i])return 0;return 1;
+ }}
+ if((a.type==V_INT||a.type==V_FLOAT)&&(b.type==V_INT||b.type==V_FLOAT))return number(a,NULL)==number(b,NULL);
+ return 0;
+}
+static LocalFrame *find_owner_frame(const Node*owner){
+ for(LocalFrame*f=local_frame;f;f=f->parent)if(f->owner==owner)return f;
+ return NULL;
+}
+typedef struct { ByteInstr *code; size_t count,cap; int supported; } ByteBuilder;
+static int bc_emit(ByteBuilder *b, ByteInstr ins){
+ if(b->count==b->cap){size_t nc=b->cap?b->cap*2:8;ByteInstr*q=realloc(b->code,nc*sizeof(*q));if(!q)return 0;b->code=q;b->cap=nc;}
+ b->code[b->count++]=ins;return 1;
+}
+static int bc_compile_node(ByteBuilder*b,const Node*n){
+ if(!n)return 0;
+ ByteInstr ins={0};
+ if(!strcmp(n->kind,"Integer")&&n->numeric_cached){ins.op=BC_INT;ins.i=n->integer_cache;return bc_emit(b,ins);}
+ if(!strcmp(n->kind,"Float")&&n->numeric_cached){ins.op=BC_FLOAT;ins.f=n->float_cache;return bc_emit(b,ins);}
+ if(!strcmp(n->kind,"Name")){
+  if(n->local_slot>=0&&n->slot_owner){ins.op=BC_LOAD_SLOT;ins.i=n->local_slot;ins.slot_owner=n->slot_owner;}
+  else {ins.op=BC_LOAD;ins.name=n->value;}
+  return bc_emit(b,ins);
+ }
+ if(!strcmp(n->kind,"Unary")&&n->count==1&&!strcmp(n->value,"-")){if(!bc_compile_node(b,n->children[0]))return 0;ins.op=BC_NEG;return bc_emit(b,ins);}
+ if(!strcmp(n->kind,"Binary")&&n->count==2){
+  switch(n->op_code){case PIFARI_OP_ADD:ins.op=BC_ADD;break;case PIFARI_OP_SUB:ins.op=BC_SUB;break;case PIFARI_OP_MUL:ins.op=BC_MUL;break;case PIFARI_OP_DIV:ins.op=BC_DIV;break;case PIFARI_OP_FLOORDIV:ins.op=BC_IDIV;break;case PIFARI_OP_MOD:ins.op=BC_MOD;break;case PIFARI_OP_POW:ins.op=BC_POW;break;case PIFARI_OP_EQ:ins.op=BC_EQ;break;case PIFARI_OP_NE:ins.op=BC_NE;break;case PIFARI_OP_LT:ins.op=BC_LT;break;case PIFARI_OP_LE:ins.op=BC_LE;break;case PIFARI_OP_GT:ins.op=BC_GT;break;case PIFARI_OP_GE:ins.op=BC_GE;break;default:return 0;}
+  if(!bc_compile_node(b,n->children[0])||!bc_compile_node(b,n->children[1]))return 0;
+  return bc_emit(b,ins);
+ }
+ if(!strcmp(n->kind,"Index")&&n->count==2){
+  if(!bc_compile_node(b,n->children[0])||!bc_compile_node(b,n->children[1]))return 0;
+  ins.op=BC_INDEX;return bc_emit(b,ins);
+ }
+ return 0;
+}
+static pthread_mutex_t bytecode_compile_mutex = PTHREAD_MUTEX_INITIALIZER;
+static int bc_ensure(const Node*n){
+ Node*m=(Node*)n;
+ /* Hot path: compiled bytecode is published once and then read without locking. */
+ if(__atomic_load_n(&m->bytecode_ready,__ATOMIC_ACQUIRE))
+  return m->bytecode_supported;
+ pthread_mutex_lock(&bytecode_compile_mutex);
+ if(__atomic_load_n(&m->bytecode_ready,__ATOMIC_RELAXED)){
+  int ok=m->bytecode_supported;
+  pthread_mutex_unlock(&bytecode_compile_mutex);
+  return ok;
+ }
+ ByteBuilder b={0};
+ if(bc_compile_node(&b,n)){
+  m->bytecode=b.code;
+  m->bytecode_count=b.count;
+  m->bytecode_supported=1;
+ }else{
+  free(b.code);
+  m->bytecode_supported=0;
+ }
+ __atomic_store_n(&m->bytecode_ready,1,__ATOMIC_RELEASE);
+ int ok=m->bytecode_supported;
+ pthread_mutex_unlock(&bytecode_compile_mutex);
+ return ok;
+}
+static Value eval_bytecode(const Node*n){
+ size_t cap=n->bytecode_count+1,sp=0;
+ /* Small expression stacks stay on the C stack; large ones use the heap. */
+ Value local_stack[32];
+ Value*stack=cap<=32?local_stack:malloc(cap*sizeof(Value));
+ if(!stack){fail(n,"memória insuficiente na VM");return vnull();}
+ for(size_t pc=0;pc<n->bytecode_count&&!runtime_failed;pc++){
+  profile_inc(&profile_bytecode_ops);
+  ByteInstr in=n->bytecode[pc];Value a,b,r=vnull();
+  switch(in.op){
+   case BC_INT:stack[sp++]=vint(in.i);break;
+   case BC_FLOAT:stack[sp++]=vfloat(in.f);break;
+   case BC_LOAD:{Binding*x=find_binding(in.name);if(!x){fail(n,"variável '%s' não foi declarada",in.name);break;}stack[sp++]=copy_value(x->value);break;}
+   case BC_LOAD_SLOT:{LocalFrame*f=find_owner_frame(in.slot_owner);if(!f||in.i<0||(size_t)in.i>=f->count){fail(n,"slot local inválido na VM");break;}stack[sp++]=copy_value(f->slots[in.i].value);break;}
+   case BC_NEG:if(!sp){fail(n,"bytecode inválido");break;}a=stack[--sp];if(a.type==V_INT)r=vint(-a.as.i);else r=vfloat(-number(a,n));free_value(a);stack[sp++]=r;break;
+   default:
+    if(sp<2){fail(n,"bytecode inválido");break;}
+    b=stack[--sp];a=stack[--sp];
+    if(in.op==BC_INDEX){
+     if(b.type!=V_INT||(a.type!=V_LIST&&a.type!=V_RANGE&&a.type!=V_F64_ARRAY)){free_value(a);free_value(b);fail(n,"indexação na VM exige lista, array tipado/range e índice inteiro");break;}
+     long long length=a.type==V_LIST?(long long)a.as.list.count:a.type==V_F64_ARRAY?(long long)a.as.array->length:a.as.range_end;
+     long long index=b.as.i;if(index<0)index+=length;free_value(b);
+     if(index<0||index>=length){free_value(a);fail(n,"índice fora dos limites");break;}
+     r=a.type==V_RANGE?vint(index):a.type==V_F64_ARRAY?vfloat(a.as.array->data[index]):copy_value(a.as.list.items[index]);free_value(a);stack[sp++]=r;break;
+    }
+    if(in.op==BC_EQ||in.op==BC_NE){int eq=equal_values(a,b);r=vbool(in.op==BC_EQ?eq:!eq);free_value(a);free_value(b);stack[sp++]=r;break;}
+    if(in.op==BC_LT||in.op==BC_LE||in.op==BC_GT||in.op==BC_GE){
+     int cmp;if(a.type==V_STRING&&b.type==V_STRING)cmp=strcmp(a.as.s,b.as.s);else if((a.type==V_INT||a.type==V_FLOAT)&&(b.type==V_INT||b.type==V_FLOAT)){double x=number(a,n),y=number(b,n);cmp=(x>y)-(x<y);}else{free_value(a);free_value(b);fail(n,"comparação na VM exige operandos compatíveis");break;}
+     r=vbool(in.op==BC_LT?cmp<0:in.op==BC_LE?cmp<=0:in.op==BC_GT?cmp>0:cmp>=0);free_value(a);free_value(b);stack[sp++]=r;break;
+    }
+    if((a.type!=V_INT&&a.type!=V_FLOAT)||(b.type!=V_INT&&b.type!=V_FLOAT)){free_value(a);free_value(b);fail(n,"a VM aritmética exige operandos numéricos");break;}
+    if(in.op==BC_ADD&&a.type==V_INT&&b.type==V_INT)r=vint(a.as.i+b.as.i);
+    else if(in.op==BC_SUB&&a.type==V_INT&&b.type==V_INT)r=vint(a.as.i-b.as.i);
+    else if(in.op==BC_MUL&&a.type==V_INT&&b.type==V_INT)r=vint(a.as.i*b.as.i);
+    else {double x=number(a,n),y=number(b,n);if(in.op==BC_ADD)r=vfloat(x+y);else if(in.op==BC_SUB)r=vfloat(x-y);else if(in.op==BC_MUL)r=vfloat(x*y);else if(in.op==BC_DIV){if(y==0)fail(n,"divisão por zero");else r=vfloat(x/y);}else if(in.op==BC_IDIV){if(y==0)fail(n,"divisão por zero");else r=(a.type==V_INT&&b.type==V_INT)?vint(a.as.i/b.as.i):vint((long long)floor(x/y));}else if(in.op==BC_MOD){if(y==0)fail(n,"divisão por zero");else r=vint((long long)x%(long long)y);}else if(in.op==BC_POW)r=vfloat(pow(x,y));}
+    free_value(a);free_value(b);if(!runtime_failed)stack[sp++]=r;else free_value(r);break;
+  }
+ }
+ Value out=vnull();
+ if(!runtime_failed&&sp){
+  out=stack[sp-1];
+  for(size_t i=0;i+1<sp;i++)free_value(stack[i]);
+ }else{
+  for(size_t i=0;i<sp;i++)free_value(stack[i]);
+ }
+ if(stack!=local_stack)free(stack);
+ return out;
+}
+static Value eval_binary(const Node*n){
+ Value a=eval(n->children[0]);
+ if(runtime_failed){free_value(a);return vnull();}
+ if(n->op_code==PIFARI_OP_AND){
+  int result=truthy(a);free_value(a);
+  if(!result)return vbool(0);
+  Value b=eval(n->children[1]);result=truthy(b);free_value(b);return vbool(result);
+ }
+ if(n->op_code==PIFARI_OP_OR){
+  int result=truthy(a);free_value(a);
+  if(result)return vbool(1);
+  Value b=eval(n->children[1]);result=truthy(b);free_value(b);return vbool(result);
+ }
+ Value b=eval(n->children[1]);
+ if(runtime_failed){free_value(a);free_value(b);return vnull();}
+ Value result=vnull();int valid=1;
+ const char*op=n->value;
+ if(n->op_code==PIFARI_OP_EQ)result=vbool(equal_values(a,b));
+ else if(n->op_code==PIFARI_OP_NE)result=vbool(!equal_values(a,b));
+ else if(n->op_code==PIFARI_OP_ADD&&a.type==V_LIST&&b.type==V_LIST){
+  if(a.as.list.count>SIZE_MAX-b.as.list.count)fail(n,"lista concatenada grande demais");
+  else {
+   size_t total=a.as.list.count+b.as.list.count;
+   result=list_new(total);
+   if(result.type!=V_LIST){result=vnull();fail(n,"memória insuficiente na concatenação de listas");}
+   else {
+    for(size_t i=0;i<a.as.list.count;i++)result.as.list.items[i]=copy_value(a.as.list.items[i]);
+    for(size_t i=0;i<b.as.list.count;i++)result.as.list.items[a.as.list.count+i]=copy_value(b.as.list.items[i]);
+   }
+  }
+ } else if(n->op_code==PIFARI_OP_ADD&&(a.type==V_STRING||b.type==V_STRING)){
+  char*x=stringify(a),*y=stringify(b);size_t z=strlen(x)+strlen(y)+1;char*s=malloc(z);
+  if(!s){fail(n,"memória insuficiente na concatenação");}
+  else {snprintf(s,z,"%s%s",x,y);result=vstr(s);free(s);}
+  free(x);free(y);
+ } else if(n->op_code==PIFARI_OP_LT||n->op_code==PIFARI_OP_LE||n->op_code==PIFARI_OP_GT||n->op_code==PIFARI_OP_GE){
+  int cmp;
+  if(a.type==V_STRING&&b.type==V_STRING)cmp=strcmp(a.as.s,b.as.s);
+  else {double x=number(a,n),y=number(b,n);cmp=(x>y)-(x<y);}
+  if(n->op_code==PIFARI_OP_LT)result=vbool(cmp<0);
+  else if(n->op_code==PIFARI_OP_LE)result=vbool(cmp<=0);
+  else if(n->op_code==PIFARI_OP_GT)result=vbool(cmp>0);
+  else result=vbool(cmp>=0);
+ } else if(a.type==V_INT&&b.type==V_INT&&n->op_code!=PIFARI_OP_DIV&&n->op_code!=PIFARI_OP_POW){
+  long long x=a.as.i,y=b.as.i;
+  if(n->op_code==PIFARI_OP_ADD)result=vint(x+y);
+  else if(n->op_code==PIFARI_OP_SUB)result=vint(x-y);
+  else if(n->op_code==PIFARI_OP_MUL)result=vint(x*y);
+  else if(n->op_code==PIFARI_OP_FLOORDIV||n->op_code==PIFARI_OP_MOD){
+   if(!y)fail(n,"divisão por zero");else result=vint(n->op_code==PIFARI_OP_FLOORDIV?x/y:x%y);
+  } else valid=0;
+ } else {
+  double x=number(a,n),y=number(b,n);
+  if(n->op_code==PIFARI_OP_ADD)result=vfloat(x+y);
+  else if(n->op_code==PIFARI_OP_SUB)result=vfloat(x-y);
+  else if(n->op_code==PIFARI_OP_MUL)result=vfloat(x*y);
+  else if(n->op_code==PIFARI_OP_DIV){if(y==0)fail(n,"divisão por zero");else result=vfloat(x/y);}
+  else if(n->op_code==PIFARI_OP_FLOORDIV||n->op_code==PIFARI_OP_MOD){
+   if(y==0)fail(n,"divisão por zero");else result=vint(n->op_code==PIFARI_OP_FLOORDIV?(long long)floor(x/y):(long long)x%(long long)y);
+  } else if(n->op_code==PIFARI_OP_POW)result=vfloat(pow(x,y));else valid=0;
+ }
+ free_value(a);free_value(b);
+ if(!valid&&!runtime_failed)fail(n,"operador binário não suportado: %s",op);
+ if(runtime_failed){free_value(result);return vnull();}
+ return result;
+}
+static Value eval_call(const Node*n){
+ for(FunctionDef *f=functions;f;f=f->next)if(!strcmp(f->name,n->value?n->value:""))return call_user_function(n,f->node);
+ const char*name=n->value?n->value:"";const Node*args=n->count?n->children[0]:NULL;size_t count=args?args->count:0;
+ if(!strcmp(name,"exp")){if(count!=1){fail(n,"exp espera um argumento");return vnull();}Value v=eval(args->children[0]);if(runtime_failed)return vnull();if(v.type!=V_INT&&v.type!=V_FLOAT){free_value(v);fail(n,"exp exige argumento numérico");return vnull();}double x=number(v,n);free_value(v);return vfloat(exp(x));}
+ if(!strcmp(name,"print")||!strcmp(name,"println")){char **parts=calloc(count?count:1,sizeof(char*));for(size_t i=0;i<count;i++){Value v=eval(args->children[i]);if(runtime_failed){for(size_t j=0;j<i;j++)free(parts[j]);free(parts);return vnull();}parts[i]=stringify(v);}pthread_mutex_lock(&pifari_output_mutex);for(size_t i=0;i<count;i++){fputs(parts[i],stdout);if(i+1<count)fputc(' ',stdout);free(parts[i]);}fputc('\n',stdout);fflush(stdout);pthread_mutex_unlock(&pifari_output_mutex);free(parts);return vnull();}
+ if(!strcmp(name,"agora_ms")){if(count!=0){fail(n,"agora_ms não recebe argumentos");return vnull();}return vint(monotonic_ms());}
+ if(!strcmp(name,"agora_ns")){if(count!=0){fail(n,"agora_ns não recebe argumentos");return vnull();}return vint(monotonic_ns());}
+ if(!strcmp(name,"thread_id")){if(count!=0){fail(n,"thread_id não recebe argumentos");return vnull();}return vint((long long)(uintptr_t)pthread_self());}
+ if(!strcmp(name,"sleep_ms")){if(count!=1){fail(n,"sleep_ms espera um argumento: milissegundos");return vnull();}Value v=eval(args->children[0]);if(runtime_failed)return vnull();if(v.type!=V_INT&&v.type!=V_FLOAT){fail(n,"sleep_ms exige milissegundos numéricos");return vnull();}double ms=number(v,n);if(ms<0||ms>86400000.0){fail(n,"sleep_ms aceita valores entre 0 e 86400000 ms");return vnull();}struct timespec req={(time_t)((long long)ms/1000),(long)((long long)ms%1000)*1000000L};while(nanosleep(&req,&req)!=0){if(errno!=EINTR){fail(n,"falha em sleep_ms: %s",strerror(errno));return vnull();}}return vnull();}
+ if(!strcmp(name,"map_fused")){
+  if(count<2||count>3||!args||strcmp(args->children[0]->kind,"Name")){
+   fail(n,"map_fused espera nome_da_funcao, lista numerica e workers opcional");return vnull();
+  }
+  FunctionDef *target=NULL;
+  for(FunctionDef *f=functions;f;f=f->next)
+   if(!strcmp(f->name,args->children[0]->value)){target=f;break;}
+  if(!target){fail(n,"map_fused: funcao '%s' nao encontrada",args->children[0]->value);return vnull();}
+  Value seq=eval(args->children[1]);
+  if(runtime_failed){free_value(seq);return vnull();}
+  if(seq.type!=V_LIST){free_value(seq);fail(n,"map_fused exige uma lista numerica");return vnull();}
+  unsigned workers=1;
+  if(count==3){
+   Value w=eval(args->children[2]);
+   if(runtime_failed){free_value(seq);free_value(w);return vnull();}
+   if(w.type!=V_INT||w.as.i<1||w.as.i>32){
+    free_value(seq);free_value(w);fail(n,"workers deve ser inteiro entre 1 e 32");return vnull();
+   }
+   workers=(unsigned)w.as.i;free_value(w);
+  }
+  PifariExprGraph local_graph;
+  const PifariExprGraph *graph=NULL;
+  int owns_graph=0;
+  char ir_error[160];
+  if(target->ir_ready){
+   graph=&target->ir;
+  }else if(pifari_ast_function_to_ir(target->node,&local_graph,ir_error,sizeof(ir_error))==0){
+   graph=&local_graph;owns_graph=1;
+  }else{
+   free_value(seq);fail(n,"map_fused: nao foi possivel compilar funcao para IR: %s",ir_error);return vnull();
+  }
+  size_t len=seq.as.list.count;
+  PifariF64Buffer input={0},output={0};
+  if(pifari_f64_buffer_init(&input,len)!=0 ||
+     pifari_f64_buffer_init(&output,len)!=0){
+   pifari_f64_buffer_destroy(&input);pifari_f64_buffer_destroy(&output);
+   if(owns_graph) pifari_graph_destroy(&local_graph);
+   free_value(seq);
+   fail(n,"map_fused: memoria insuficiente para buffers F64");return vnull();
+  }
+  int valid=1;
+  for(size_t i=0;i<len;i++){
+   Value x=seq.as.list.items[i];
+   if(x.type!=V_INT&&x.type!=V_FLOAT){valid=0;break;}
+   input.data[i]=number(x,n);
+  }
+  int map_status=-1;
+  if(target->ir_ready&&!target->native_kernel)
+   (void)pifari_native_kernel_create(&target->ir,&target->native_kernel);
+  if(valid){
+   if(target->native_kernel)
+    map_status=pifari_native_kernel_map(target->native_kernel,input.data,output.data,len,workers);
+   else
+    map_status=pifari_graph_map_parallel(graph,input.data,output.data,len,workers);
+  }
+  if(map_status!=0){
+   pifari_f64_buffer_destroy(&input);pifari_f64_buffer_destroy(&output);
+   if(owns_graph) pifari_graph_destroy(&local_graph);
+   free_value(seq);
+   fail(n,valid?"map_fused: falha ao executar kernel nativo/IR":"map_fused aceita somente elementos numericos");return vnull();
+  }
+  Value result=list_new(len);
+  if(result.type==V_LIST)for(size_t i=0;i<len;i++)result.as.list.items[i]=vfloat(output.data[i]);
+  pifari_f64_buffer_destroy(&input);pifari_f64_buffer_destroy(&output);
+  if(owns_graph) pifari_graph_destroy(&local_graph);
+   free_value(seq);
+  if(result.type!=V_LIST){fail(n,"map_fused: memoria insuficiente no resultado");return vnull();}
+  return result;
+ }
+ if(!strcmp(name,"map_indexed_native")){
+  if(count<2||count>3||!args){fail(n,"map_indexed_native espera nome_da_funcao, array_f64 e workers opcional");return vnull();}
+  Value fn_name=eval(args->children[0]);if(runtime_failed){free_value(fn_name);return vnull();}
+  Value seq=eval(args->children[1]);if(runtime_failed){free_value(fn_name);free_value(seq);return vnull();}
+  if(fn_name.type!=V_STRING||seq.type!=V_F64_ARRAY||!seq.as.array){free_value(fn_name);free_value(seq);fail(n,"map_indexed_native exige nome de função string e array F64");return vnull();}
+  unsigned workers=1;
+  if(count==3){Value w=eval(args->children[2]);if(runtime_failed){free_value(fn_name);free_value(seq);free_value(w);return vnull();}if(w.type!=V_INT||w.as.i<1||w.as.i>32){free_value(fn_name);free_value(seq);free_value(w);fail(n,"workers deve ser inteiro entre 1 e 32");return vnull();}workers=(unsigned)w.as.i;free_value(w);}
+  FunctionDef *target=NULL;for(FunctionDef*f=functions;f;f=f->next)if(!strcmp(f->name,fn_name.as.s)){target=f;break;}
+  if(!target){fail(n,"função indexada '%s' não encontrada",fn_name.as.s);free_value(fn_name);free_value(seq);return vnull();}
+  char ir_error[160];
+  if(!target->indexed_ir_ready){if(pifari_ast_indexed_function_to_ir(target->node,&target->indexed_ir,ir_error,sizeof(ir_error))!=0){free_value(fn_name);free_value(seq);fail(n,"map_indexed_native: %s",ir_error);return vnull();}target->indexed_ir_ready=1;}
+  if(!target->indexed_kernel&&pifari_native_kernel_create(&target->indexed_ir,&target->indexed_kernel)!=0){free_value(fn_name);free_value(seq);fail(n,"map_indexed_native: compilação do kernel nativo falhou");return vnull();}
+  size_t len=seq.as.array->length;Value result=f64_array_new(len);
+  if(result.type!=V_F64_ARRAY){free_value(fn_name);free_value(seq);fail(n,"map_indexed_native: memória insuficiente no resultado");return vnull();}
+  int status=pifari_native_kernel_map(target->indexed_kernel,seq.as.array->data,result.as.array->data,len,workers);
+  free_value(fn_name);free_value(seq);
+  if(status!=0){free_value(result);fail(n,status==-2?"map_indexed_native: divisão por zero":"map_indexed_native: falha no kernel nativo");return vnull();}
+  return result;
+ }
+ if(!strcmp(name,"map_fused_chain")){
+  if(count<2||count>3||!args){fail(n,"map_fused_chain espera lista_de_funcoes, dados e workers opcional");return vnull();}
+  Value names=eval(args->children[0]); if(runtime_failed){free_value(names);return vnull();}
+  Value seq=eval(args->children[1]); if(runtime_failed){free_value(names);free_value(seq);return vnull();}
+  if(names.type!=V_LIST||names.as.list.count==0||(seq.type!=V_LIST&&seq.type!=V_RANGE&&seq.type!=V_F64_ARRAY)){free_value(names);free_value(seq);fail(n,"map_fused_chain exige lista de nomes de funções e lista/range de dados");return vnull();}
+  unsigned workers=1;
+  if(count==3){Value w=eval(args->children[2]);if(runtime_failed){free_value(names);free_value(seq);free_value(w);return vnull();}if(w.type!=V_INT||w.as.i<1||w.as.i>32){free_value(names);free_value(seq);free_value(w);fail(n,"workers deve ser inteiro entre 1 e 32");return vnull();}workers=(unsigned)w.as.i;free_value(w);}
+  PifariExprGraph composed={0}; int have_graph=0,ok=1; char ir_error[160];
+  for(size_t i=0;i<names.as.list.count&&ok;i++){
+   Value fn=names.as.list.items[i]; if(fn.type!=V_STRING){ok=0;snprintf(ir_error,sizeof ir_error,"cada nome na cadeia deve ser string");break;}
+   FunctionDef *target=NULL;for(FunctionDef*f=functions;f;f=f->next)if(!strcmp(f->name,fn.as.s)){target=f;break;}
+   if(!target){ok=0;snprintf(ir_error,sizeof ir_error,"função '%s' não encontrada",fn.as.s);break;}
+   PifariExprGraph next={0};
+   if(pifari_ast_function_to_ir(target->node,&next,ir_error,sizeof ir_error)!=0){ok=0;break;}
+   if(!have_graph){composed=next;have_graph=1;}
+   else {PifariExprGraph merged={0};int rc=pifari_graph_compose(&composed,&next,&merged);pifari_graph_destroy(&composed);pifari_graph_destroy(&next);if(rc!=0){ok=0;snprintf(ir_error,sizeof ir_error,"falha ao compor grafos IR");break;}composed=merged;}
+  }
+  size_t len=seq.type==V_LIST?seq.as.list.count:seq.type==V_F64_ARRAY?seq.as.array->length:(size_t)seq.as.range_end;PifariF64Buffer input={0},output={0};PifariNativeKernel *kernel=NULL;
+  if(ok&&(pifari_f64_buffer_init(&input,len)!=0||pifari_f64_buffer_init(&output,len)!=0)){ok=0;snprintf(ir_error,sizeof ir_error,"memória insuficiente nos buffers F64");}
+  for(size_t i=0;i<len&&ok;i++){if(seq.type==V_RANGE){input.data[i]=(double)i;continue;}if(seq.type==V_F64_ARRAY){input.data[i]=seq.as.array->data[i];continue;}Value x=seq.as.list.items[i];if(x.type!=V_INT&&x.type!=V_FLOAT){ok=0;snprintf(ir_error,sizeof ir_error,"dados devem ser numéricos");break;}input.data[i]=number(x,n);}
+  if(ok&&(kernel=chain_kernel_get(names,&composed))==NULL){ok=0;snprintf(ir_error,sizeof ir_error,"compilação nativa/cache da cadeia falhou");}
+  int status=ok?pifari_native_kernel_map(kernel,input.data,output.data,len,workers):-1;
+  if(status!=0){pifari_f64_buffer_destroy(&input);pifari_f64_buffer_destroy(&output);if(have_graph)pifari_graph_destroy(&composed);free_value(names);free_value(seq);fail(n,ok&&status==-2?"divisão por zero na cadeia fundida":"map_fused_chain: %s",ok?"falha no kernel nativo":ir_error);return vnull();}
+  Value result=seq.type==V_F64_ARRAY?f64_array_new(len):list_new(len);if(result.type==V_F64_ARRAY){for(size_t i=0;i<len;i++)result.as.array->data[i]=output.data[i];}else if(result.type==V_LIST)for(size_t i=0;i<len;i++)result.as.list.items[i]=vfloat(output.data[i]);
+  pifari_f64_buffer_destroy(&input);pifari_f64_buffer_destroy(&output);if(have_graph)pifari_graph_destroy(&composed);free_value(names);free_value(seq);
+  if(result.type!=V_LIST&&result.type!=V_F64_ARRAY){fail(n,"map_fused_chain: memória insuficiente no resultado");return vnull();}return result;
+ }
+ if(!strcmp(name,"map_affine_relu")){
+  if(count<3||count>4){fail(n,"map_affine_relu espera lista, escala, deslocamento e workers opcional");return vnull();}
+  Value seq=eval(args->children[0]);if(runtime_failed){free_value(seq);return vnull();}
+  Value sv=eval(args->children[1]),bv=eval(args->children[2]);
+  if(runtime_failed){free_value(seq);free_value(sv);free_value(bv);return vnull();}
+  if(seq.type!=V_LIST||(sv.type!=V_INT&&sv.type!=V_FLOAT)||(bv.type!=V_INT&&bv.type!=V_FLOAT)){
+   free_value(seq);free_value(sv);free_value(bv);fail(n,"map_affine_relu exige lista numérica, escala e deslocamento numéricos");return vnull();
+  }
+  unsigned workers=1;
+  if(count==4){Value w=eval(args->children[3]);if(runtime_failed){free_value(seq);free_value(sv);free_value(bv);free_value(w);return vnull();}if(w.type!=V_INT||w.as.i<1||w.as.i>32){free_value(seq);free_value(sv);free_value(bv);free_value(w);fail(n,"workers deve ser inteiro entre 1 e 32");return vnull();}workers=(unsigned)w.as.i;free_value(w);}
+  size_t len=seq.as.list.count;double*in=malloc((len?len:1)*sizeof(double));double*outbuf=malloc((len?len:1)*sizeof(double));
+  if(!in||!outbuf){free(in);free(outbuf);free_value(seq);free_value(sv);free_value(bv);fail(n,"memória insuficiente em map_affine_relu");return vnull();}
+  int valid=1;for(size_t i=0;i<len;i++){Value x=seq.as.list.items[i];if(x.type!=V_INT&&x.type!=V_FLOAT){valid=0;break;}in[i]=number(x,n);}
+  if(!valid||pifari_kernel_affine_relu(in,outbuf,len,number(sv,n),number(bv,n),workers)!=0){free(in);free(outbuf);free_value(seq);free_value(sv);free_value(bv);fail(n,"map_affine_relu falhou: elementos precisam ser numéricos");return vnull();}
+  Value result=list_new(len);if(result.type!=V_LIST){free(in);free(outbuf);free_value(seq);free_value(sv);free_value(bv);fail(n,"memória insuficiente no resultado de map_affine_relu");return vnull();}
+  for(size_t i=0;i<len;i++)result.as.list.items[i]=vfloat(outbuf[i]);
+  free(in);free(outbuf);free_value(seq);free_value(sv);free_value(bv);return result;
+ }
+ if(!strcmp(name,"matmul")){
+  if(count!=2){fail(n,"matmul espera duas matrizes");return vnull();}
+  Value a=eval(args->children[0]);if(runtime_failed){free_value(a);return vnull();}
+  Value b=eval(args->children[1]);if(runtime_failed){free_value(a);free_value(b);return vnull();}
+  if(a.type!=V_LIST||b.type!=V_LIST){free_value(a);free_value(b);fail(n,"matmul exige duas listas de linhas");return vnull();}
+  size_t rows=a.as.list.count,inner=0,brows=b.as.list.count,cols=0;int is_float=0,valid=1;
+  if(rows){Value*r=&a.as.list.items[0];if(r->type!=V_LIST)valid=0;else inner=r->as.list.count;}
+  if(brows){Value*r=&b.as.list.items[0];if(r->type!=V_LIST)valid=0;else cols=r->as.list.count;}
+  if(inner!=brows)valid=0;
+  for(size_t i=0;i<rows&&valid;i++){
+   Value*r=&a.as.list.items[i];if(r->type!=V_LIST||r->as.list.count!=inner){valid=0;break;}
+   for(size_t k=0;k<inner;k++){Value x=r->as.list.items[k];if(x.type!=V_INT&&x.type!=V_FLOAT){valid=0;break;}if(x.type==V_FLOAT)is_float=1;}
+  }
+  for(size_t k=0;k<brows&&valid;k++){
+   Value*r=&b.as.list.items[k];if(r->type!=V_LIST||r->as.list.count!=cols){valid=0;break;}
+   for(size_t j=0;j<cols;j++){Value x=r->as.list.items[j];if(x.type!=V_INT&&x.type!=V_FLOAT){valid=0;break;}if(x.type==V_FLOAT)is_float=1;}
+  }
+  if(!valid){free_value(a);free_value(b);fail(n,"matmul exige matrizes retangulares compatíveis com elementos numéricos");return vnull();}
+  Value out=list_new(rows);if(out.type!=V_LIST){free_value(a);free_value(b);fail(n,"memória insuficiente em matmul");return vnull();}
+  for(size_t i=0;i<rows;i++){
+   out.as.list.items[i]=list_new(cols);
+   if(out.as.list.items[i].type!=V_LIST){free_value(out);free_value(a);free_value(b);fail(n,"memória insuficiente em matmul");return vnull();}
+   for(size_t j=0;j<cols;j++)out.as.list.items[i].as.list.items[j]=is_float?vfloat(0.0):vint(0);
+  }
+  if(is_float){
+   for(size_t i=0;i<rows;i++)for(size_t k=0;k<inner;k++){
+    Value av=a.as.list.items[i].as.list.items[k];double x=number(av,n);
+    for(size_t j=0;j<cols;j++){double y=number(b.as.list.items[k].as.list.items[j],n);out.as.list.items[i].as.list.items[j].as.f+=x*y;}
+   }
+  }else{
+   for(size_t i=0;i<rows;i++)for(size_t k=0;k<inner;k++){
+    long long x=a.as.list.items[i].as.list.items[k].as.i;
+    for(size_t j=0;j<cols;j++)out.as.list.items[i].as.list.items[j].as.i+=x*b.as.list.items[k].as.list.items[j].as.i;
+   }
+  }
+  free_value(a);free_value(b);return out;
+ }
+ if(!strcmp(name,"sort")){
+  if(count!=1){fail(n,"sort espera uma lista numérica");return vnull();}
+  Value seq=eval(args->children[0]);if(runtime_failed){free_value(seq);return vnull();}
+  if(seq.type!=V_LIST){free_value(seq);fail(n,"sort exige uma lista");return vnull();}
+  size_t len=seq.as.list.count;Value out=list_new(len);if(out.type!=V_LIST){free_value(seq);fail(n,"memória insuficiente em sort");return vnull();}
+  for(size_t i=0;i<len;i++){Value x=seq.as.list.items[i];if(x.type!=V_INT&&x.type!=V_FLOAT){free_value(seq);free_value(out);fail(n,"sort aceita somente listas numéricas");return vnull();}out.as.list.items[i]=copy_value(x);}
+  qsort(out.as.list.items,len,sizeof(Value),compare_numeric_values);free_value(seq);return out;
+ }
+ if(!strcmp(name,"binary_search")){
+  if(count!=2){fail(n,"binary_search espera lista ordenada e alvo numérico");return vnull();}
+  Value seq=eval(args->children[0]),target=eval(args->children[1]);if(runtime_failed){free_value(seq);free_value(target);return vnull();}
+  if(seq.type!=V_LIST||(target.type!=V_INT&&target.type!=V_FLOAT)){free_value(seq);free_value(target);fail(n,"binary_search exige lista e alvo numéricos");return vnull();}
+  long double needle=target.type==V_INT?(long double)target.as.i:(long double)target.as.f;long long lo=0,hi=(long long)seq.as.list.count-1,found=-1;
+  while(lo<=hi){long long mid=lo+(hi-lo)/2;Value x=seq.as.list.items[mid];if(x.type!=V_INT&&x.type!=V_FLOAT){free_value(seq);free_value(target);fail(n,"binary_search aceita somente listas numéricas ordenadas");return vnull();}long double v=x.type==V_INT?(long double)x.as.i:(long double)x.as.f;if(v<needle)lo=mid+1;else if(v>needle)hi=mid-1;else{found=mid;break;}}
+  free_value(seq);free_value(target);return vint(found);
+ }
+ if(!strcmp(name,"solve_linear")){
+  if(count!=2){fail(n,"solve_linear espera matriz quadrada A e vetor b");return vnull();}
+  Value av=eval(args->children[0]),bv=eval(args->children[1]);if(runtime_failed){free_value(av);free_value(bv);return vnull();}
+  if(av.type!=V_LIST||bv.type!=V_LIST||av.as.list.count!=bv.as.list.count){free_value(av);free_value(bv);fail(n,"solve_linear exige matriz quadrada e vetor de tamanho compatível");return vnull();}
+  size_t dim=av.as.list.count;if(dim&&dim>SIZE_MAX/dim){free_value(av);free_value(bv);fail(n,"dimensão excessiva em solve_linear");return vnull();}
+  if(dim&&dim>SIZE_MAX/sizeof(double)/dim){free_value(av);free_value(bv);fail(n,"matriz grande demais em solve_linear");return vnull();}
+  size_t cells=dim?dim*dim:1;
+  double*mat=malloc(cells*sizeof(double)),*rhs=malloc((dim?dim:1)*sizeof(double));
+  if(!mat||!rhs){free(mat);free(rhs);free_value(av);free_value(bv);fail(n,"memória insuficiente em solve_linear");return vnull();}
+  int valid=1;for(size_t i=0;i<dim&&valid;i++){
+   Value row=av.as.list.items[i];if(row.type!=V_LIST||row.as.list.count!=dim){valid=0;break;}
+   for(size_t j=0;j<dim;j++){Value x=row.as.list.items[j];if(x.type!=V_INT&&x.type!=V_FLOAT){valid=0;break;}mat[i*dim+j]=number(x,n);if(!isfinite(mat[i*dim+j])){valid=0;break;}}
+   Value y=bv.as.list.items[i];if(y.type!=V_INT&&y.type!=V_FLOAT){valid=0;break;}rhs[i]=number(y,n);if(!isfinite(rhs[i])){valid=0;break;}
+  }
+  if(!valid){free(mat);free(rhs);free_value(av);free_value(bv);fail(n,"solve_linear exige elementos numéricos e matriz quadrada");return vnull();}
+  for(size_t k=0;k<dim;k++){
+   size_t pivot=k;double best=fabs(mat[k*dim+k]);for(size_t i=k+1;i<dim;i++){double v=fabs(mat[i*dim+k]);if(v>best){best=v;pivot=i;}}
+   if(best==0.0||!isfinite(best)){free(mat);free(rhs);free_value(av);free_value(bv);fail(n,"solve_linear: matriz singular");return vnull();}
+   if(pivot!=k){for(size_t j=k;j<dim;j++){double tmp=mat[k*dim+j];mat[k*dim+j]=mat[pivot*dim+j];mat[pivot*dim+j]=tmp;}double tmp=rhs[k];rhs[k]=rhs[pivot];rhs[pivot]=tmp;}
+   for(size_t i=k+1;i<dim;i++){double factor=mat[i*dim+k]/mat[k*dim+k];mat[i*dim+k]=0.0;for(size_t j=k+1;j<dim;j++)mat[i*dim+j]-=factor*mat[k*dim+j];rhs[i]-=factor*rhs[k];}
+  }
+  for(size_t ii=dim;ii>0;ii--){size_t i=ii-1;for(size_t j=i+1;j<dim;j++)rhs[i]-=mat[i*dim+j]*rhs[j];rhs[i]/=mat[i*dim+i];}
+  Value out=list_new(dim);if(out.type==V_LIST)for(size_t i=0;i<dim;i++)out.as.list.items[i]=vfloat(rhs[i]);
+  free(mat);free(rhs);free_value(av);free_value(bv);if(out.type!=V_LIST)fail(n,"memória insuficiente no resultado de solve_linear");return out;
+ }
+ if(!strcmp(name,"array_set")){
+  if(count!=3){fail(n,"array_set espera array, índice e valor");return vnull();}
+  Value arr=eval(args->children[0]);if(runtime_failed){free_value(arr);return vnull();}
+  Value idx=eval(args->children[1]);if(runtime_failed){free_value(arr);free_value(idx);return vnull();}
+  Value val=eval(args->children[2]);if(runtime_failed){free_value(arr);free_value(idx);free_value(val);return vnull();}
+  if(arr.type!=V_F64_ARRAY||!arr.as.array||idx.type!=V_INT||(val.type!=V_INT&&val.type!=V_FLOAT)){free_value(arr);free_value(idx);free_value(val);fail(n,"array_set exige array f64, índice inteiro e valor numérico");return vnull();}
+  long long i=idx.as.i;size_t length=arr.as.array->length;if(i<0)i+=(long long)length;
+  if(i<0||(size_t)i>=length){free_value(arr);free_value(idx);free_value(val);fail(n,"índice fora dos limites");return vnull();}
+  arr.as.array->data[i]=number(val,n);free_value(arr);free_value(idx);free_value(val);return vnull();
+ }
+ if(!strcmp(name,"f64_array")||!strcmp(name,"array_f64")){
+  if(count!=1){fail(n,"f64_array espera tamanho ou lista numérica");return vnull();}
+  Value src=eval(args->children[0]);if(runtime_failed){free_value(src);return vnull();}
+  size_t length=0;if(src.type==V_INT&&src.as.i>=0&&src.as.i<=10000000)length=(size_t)src.as.i;else if(src.type==V_LIST)length=src.as.list.count;else if(src.type==V_RANGE&&src.as.range_end>=0)length=(size_t)src.as.range_end;else{free_value(src);fail(n,"f64_array espera tamanho entre 0 e 10000000 ou lista/range numérico");return vnull();}
+  Value out=f64_array_new(length);if(out.type!=V_F64_ARRAY){free_value(src);fail(n,"memória insuficiente em f64_array");return vnull();}
+  for(size_t i=0;i<length;i++){Value x=src.type==V_LIST?src.as.list.items[i]:(src.type==V_RANGE?vint((long long)i):vint(0));if(x.type!=V_INT&&x.type!=V_FLOAT){free_value(src);free_value(out);fail(n,"f64_array só aceita elementos numéricos");return vnull();}out.as.array->data[i]=number(x,n);}
+  free_value(src);return out;
+ }
+ if(!strcmp(name,"range")){if(count!=1){fail(n,"range espera um argumento: limite");return vnull();}Value v=eval(args->children[0]);if(runtime_failed)return vnull();if(v.type!=V_INT||v.as.i<0||v.as.i>1000000){fail(n,"range aceita um inteiro entre 0 e 1000000");return vnull();}Value out={.type=V_RANGE};out.as.range_end=v.as.i;return out;}
+ if(!strcmp(name,"len")){if(count!=1){fail(n,"len espera um argumento");return vnull();}Value v=eval(args->children[0]);if(v.type==V_STRING)return vint((long long)strlen(v.as.s));if(v.type==V_LIST)return vint((long long)v.as.list.count);if(v.type==V_RANGE)return vint(v.as.range_end);if(v.type==V_F64_ARRAY)return vint((long long)v.as.array->length);fail(n,"len espera texto, lista, array tipado ou range");return vnull();}
+ if(!strcmp(name,"int")||!strcmp(name,"long")||!strcmp(name,"short")||!strcmp(name,"float")||!strcmp(name,"double")||!strcmp(name,"str")||!strcmp(name,"txt")||!strcmp(name,"bool")){
+  if(count!=1){fail(n,"cast %s espera um argumento",name);return vnull();}Value v=eval(args->children[0]);if(runtime_failed)return vnull();
+  if(!strcmp(name,"str")||!strcmp(name,"txt")){char*s=stringify(v);Value r=vstr(s);free(s);return r;}
+  if(!strcmp(name,"bool"))return vbool(truthy(v));
+  if(!strcmp(name,"int")||!strcmp(name,"long")||!strcmp(name,"short")){if(v.type==V_STRING){char*end;errno=0;long long z=strtoll(v.as.s,&end,10);if(errno||*end){fail(n,"conversão para int inválida");return vnull();}return vint(z);}return vint((long long)number(v,n));}
+  return vfloat(number(v,n));
+ }
+ Binding*b=find_binding(name);if(b)return copy_value(b->value);
+ fail(n,"função '%s' não existe",name);return vnull();
+}
+
+static size_t count_nodes(const Node*n){if(!n)return 0;size_t z=1;for(size_t i=0;i<n->count;i++)z+=count_nodes(n->children[i]);return z;}
+static void collect_slot_names(const Node*n,Binding*slots,size_t*used,size_t cap){
+ if(!n||!strcmp(n->kind,"Function")||!strcmp(n->kind,"FunctionExpr"))return;
+ const char*name=NULL;
+ if(!strcmp(n->kind,"Assign")||!strcmp(n->kind,"TypedDecl")||!strcmp(n->kind,"For"))name=n->value;
+ if(!strcmp(n->kind,"Flow")&&n->value&&!strcmp(n->value,"|<")&&n->count>1&&n->children[1]&&!strcmp(n->children[1]->kind,"Name"))name=n->children[1]->value;
+ if(name&&*name){
+  int found=0;for(size_t i=0;i<*used;i++)if(!strcmp(slots[i].name,name)){found=1;break;}
+  if(!found&&*used<cap)slots[(*used)++].name=(char*)name;
+ }
+ for(size_t i=0;i<n->count;i++)collect_slot_names(n->children[i],slots,used,cap);
+}
+static void annotate_slot_nodes(Node*n,Binding*slots,size_t count,const Node*owner){
+ if(!n||!strcmp(n->kind,"Function")||!strcmp(n->kind,"FunctionExpr"))return;
+ if(!strcmp(n->kind,"Name")){
+  for(size_t i=0;i<count;i++)if(!strcmp(slots[i].name,n->value)){n->local_slot=(int)i;n->slot_owner=owner;break;}
+ }
+ const char*target=NULL;
+ if(!strcmp(n->kind,"Assign")||!strcmp(n->kind,"TypedDecl")||!strcmp(n->kind,"For"))target=n->value;
+ if(!strcmp(n->kind,"Flow")&&n->value&&!strcmp(n->value,"|<")&&n->count>1&&n->children[1]&&!strcmp(n->children[1]->kind,"Name"))target=n->children[1]->value;
+ if(target)for(size_t i=0;i<count;i++)if(!strcmp(slots[i].name,target)){n->target_slot=(int)i;n->target_owner=owner;break;}
+ for(size_t i=0;i<n->count;i++)annotate_slot_nodes(n->children[i],slots,count,owner);
+}
+static Binding *node_target_binding(const Node*n,const char*name){
+ if(n&&n->target_slot>=0&&n->target_owner){
+  LocalFrame*f=find_owner_frame(n->target_owner);
+  if(f&&(size_t)n->target_slot<f->count)return &f->slots[n->target_slot];
+ }
+ return find_binding(name);
+}
+static void set_node_binding(const Node*n,const char*name,Value v,const Node*at){
+ Binding*b=node_target_binding(n,name);
+ if(!b){set_binding(name,v,at,0);return;}
+ free_value(b->value);b->value=v;
+}
+
+typedef struct { char *s; size_t len,cap; int failed; } JitBuffer;
+static int jit_append(JitBuffer*b,const char*fmt,...){
+ if(b->failed)return 0;
+ va_list ap;va_start(ap,fmt);va_list cp;va_copy(cp,ap);
+ int n=vsnprintf(NULL,0,fmt,cp);va_end(cp);
+ if(n<0){va_end(ap);b->failed=1;return 0;}
+ size_t need=b->len+(size_t)n+1;
+ if(need>b->cap){size_t cap=b->cap?b->cap:256;while(cap<need)cap*=2;char*q=realloc(b->s,cap);if(!q){va_end(ap);b->failed=1;return 0;}b->s=q;b->cap=cap;}
+ vsnprintf(b->s+b->len,b->cap-b->len,fmt,ap);va_end(ap);b->len+=(size_t)n;return 1;
+}
+static int jit_expr(JitBuffer*b,const Node*n,const Node*owner){
+ if(!n)return 0;
+ if(!strcmp(n->kind,"Integer")&&n->numeric_cached)return jit_append(b,"%lldLL",n->integer_cache);
+ if(!strcmp(n->kind,"Name")&&n->local_slot>=0&&n->slot_owner==owner)return jit_append(b,"v[%d]",n->local_slot);
+ if(!strcmp(n->kind,"Unary")&&n->count==1&&n->value&&!strcmp(n->value,"-"))return jit_append(b,"(-(")&&jit_expr(b,n->children[0],owner)&&jit_append(b,"))");
+ if(!strcmp(n->kind,"Binary")&&n->count==2){
+  const char*op=NULL;
+  switch(n->op_code){case PIFARI_OP_ADD:op="+";break;case PIFARI_OP_SUB:op="-";break;case PIFARI_OP_MUL:op="*";break;case PIFARI_OP_FLOORDIV:op="/";break;case PIFARI_OP_MOD:op="%";break;default:return 0;}
+  return jit_append(b,"(")&&jit_expr(b,n->children[0],owner)&&jit_append(b," %s ",op)&&jit_expr(b,n->children[1],owner)&&jit_append(b,")");
+ }
+ return 0;
+}
+static size_t jit_name_refs(const Node*n,const char*name){
+ if(!n)return 0;
+ size_t count=(!strcmp(n->kind,"Name")&&n->value&&!strcmp(n->value,name))?1:0;
+ for(size_t i=0;i<n->count;i++)count+=jit_name_refs(n->children[i],name);
+ return count;
+}
+static int jit_writes_name(const Node*n,const char*name){
+ if(!n)return 0;
+ if((!strcmp(n->kind,"Assign")||!strcmp(n->kind,"TypedDecl"))&&n->value&&!strcmp(n->value,name))return 1;
+ for(size_t i=0;i<n->count;i++)if(jit_writes_name(n->children[i],name))return 1;
+ return 0;
+}
+static int jit_stmt(JitBuffer*b,const Node*n,const Node*owner,int*has_return,int*requires_range){
+ if(!n)return 0;
+ if(!strcmp(n->kind,"Block")||!strcmp(n->kind,"Statements")){
+  for(size_t i=0;i<n->count;i++)if(!jit_stmt(b,n->children[i],owner,has_return,requires_range))return 0;
+  return 1;
+ }
+ if(!strcmp(n->kind,"Assign")){
+  if(n->target_slot<0||n->target_owner!=owner||!n->count)return 0;
+  return jit_append(b,"v[%d] = ",n->target_slot)&&jit_expr(b,n->children[0],owner)&&jit_append(b,";\n");
+ }
+ if(!strcmp(n->kind,"For")){
+  if(n->target_slot<0||n->target_owner!=owner||n->count<2)return 0;
+  const Node*r=n->children[0];
+  const Node*args=r&&r->count?r->children[0]:NULL;
+  if(!r||strcmp(r->kind,"Call")||!r->value||strcmp(r->value,"range")||!args||args->count!=1)return 0;
+  const Node*bound=args->children[0];
+  if(!bound||strcmp(bound->kind,"Name")||bound->local_slot<0||bound->slot_owner!=owner)return 0;
+  /* Restrict JIT range bounds to parameters so range validation remains exact. */
+  int is_parameter=0;const Node*params=owner->count?owner->children[0]:NULL;
+  if(params)for(size_t i=0;i<params->count;i++)if(!strcmp(params->children[i]->value,bound->value))is_parameter=1;
+  if(!is_parameter)return 0;
+  if(jit_name_refs(owner->count>1?owner->children[1]:NULL,n->value)!=jit_name_refs(n->children[1],n->value)||jit_writes_name(owner->count>1?owner->children[1]:NULL,n->value))return 0;
+  *requires_range=1;
+  if(!jit_append(b,"{ long long bound_%d = v[%d]; for(v[%d]=0; v[%d]<bound_%d; ++v[%d]) {\n",n->target_slot,bound->local_slot,n->target_slot,n->target_slot,n->target_slot,n->target_slot))return 0;
+  if(!jit_stmt(b,n->children[1],owner,has_return,requires_range))return 0;
+  return jit_append(b,"} }\n");
+ }
+ if(!strcmp(n->kind,"Return")){
+  if(n->count!=1)return 0;
+  if(!jit_append(b,"return "))return 0;
+  if(!jit_expr(b,n->children[0],owner)||!jit_append(b,";\n"))return 0;
+  *has_return=1;return 1;
+ }
+ return 0;
+}
+static void jit_compile_function(FunctionDef*f){
+ if(!f||!f->node||strcmp(f->node->kind,"Function"))return;
+ const Node*def=f->node,*params=def->count?def->children[0]:NULL,*body=def->count>1?def->children[1]:NULL;
+ if(!params||params->count!=1||!params->children[0]->value||!body)return;
+ size_t cap=count_nodes(body)+params->count;
+ Binding*slots=calloc(cap?cap:1,sizeof(Binding));if(!slots)return;
+ size_t used=0;slots[used++].name=params->children[0]->value;
+ collect_slot_names(body,slots,&used,cap);
+ annotate_slot_nodes((Node*)body,slots,used,def);
+ int has_return=0,requires_range=0;JitBuffer b={0};
+ jit_append(&b,"#include <limits.h>\nlong long pifari_jit(long long arg0) { long long v[%zu]={0}; v[0]=arg0;\n",used?used:1);
+ if(!jit_stmt(&b,body,def,&has_return,&requires_range)||!has_return||b.failed){free(b.s);free(slots);return;}
+ jit_append(&b,"return 0; }\n");
+ if(b.failed){free(b.s);free(slots);return;}
+ char cache_dir[128],cachepath[256],cmd[768],dir_template[128],cpath[192],sopath[192];
+ snprintf(cache_dir,sizeof(cache_dir),"/tmp/pifari_jit_cache_%lu",(unsigned long)getuid());
+ if(mkdir(cache_dir,0700)!=0&&errno!=EEXIST){free(b.s);free(slots);return;}
+ struct stat cache_stat;
+ if(stat(cache_dir,&cache_stat)!=0||!S_ISDIR(cache_stat.st_mode)||cache_stat.st_uid!=getuid()){free(b.s);free(slots);return;}
+ (void)chmod(cache_dir,0700);
+ uint64_t hash=UINT64_C(1469598103934665603);for(size_t i=0;i<b.len;i++){hash^=(unsigned char)b.s[i];hash*=UINT64_C(1099511628211);}
+ snprintf(cachepath,sizeof(cachepath),"%s/%016llx.so",cache_dir,(unsigned long long)hash);
+ void*h=NULL;
+ if(access(cachepath,R_OK)==0)h=dlopen(cachepath,RTLD_NOW|RTLD_LOCAL);
+ if(!h){
+  snprintf(dir_template,sizeof(dir_template),"/tmp/pifari_jit_%ld_XXXXXX",(long)getpid());
+  char*temp_dir=mkdtemp(dir_template);if(!temp_dir){free(b.s);free(slots);return;}
+  snprintf(cpath,sizeof(cpath),"%s/source.c",temp_dir);
+  snprintf(sopath,sizeof(sopath),"%s/module.so",temp_dir);
+  FILE*fp=fopen(cpath,"wb");if(!fp){rmdir(temp_dir);free(b.s);free(slots);return;}
+  size_t written=fwrite(b.s,1,b.len,fp);int close_rc=fclose(fp);
+  if(written==0||close_rc!=0){unlink(cpath);rmdir(temp_dir);free(b.s);free(slots);return;}
+  snprintf(cmd,sizeof(cmd),"gcc -std=c11 -O3 -march=native -shared -fPIC -o %s %s 2>/dev/null",sopath,cpath);
+  int rc=system(cmd);unlink(cpath);
+  if(rc!=0){unlink(sopath);rmdir(temp_dir);free(b.s);free(slots);return;}
+  if(rename(sopath,cachepath)!=0){unlink(sopath);rmdir(temp_dir);free(b.s);free(slots);return;}
+  rmdir(temp_dir);h=dlopen(cachepath,RTLD_NOW|RTLD_LOCAL);
+ }
+ free(b.s);free(slots);if(!h)return;
+ void*sym=dlsym(h,"pifari_jit");long long(*fn)(long long)=NULL;
+ if(!sym||sizeof(fn)!=sizeof(sym)){dlclose(h);return;}
+ memcpy(&fn,&sym,sizeof(fn));f->jit_handle=h;f->jit_fn=fn;f->jit_requires_range=requires_range;
+}
+static void free_function_registry(void){
+ while(functions){
+  FunctionDef*next=functions->next;
+  if(functions->native_kernel)pifari_native_kernel_destroy(functions->native_kernel);
+  if(functions->ir_ready)pifari_graph_destroy(&functions->ir);
+  if(functions->indexed_kernel)pifari_native_kernel_destroy(functions->indexed_kernel);
+  if(functions->indexed_ir_ready)pifari_graph_destroy(&functions->indexed_ir);
+  if(functions->jit_handle)dlclose(functions->jit_handle);
+  free(functions);functions=next;
+ }
+}
+static void build_slot_index(LocalFrame*f){
+ memset(f->buckets,0,sizeof(f->buckets));
+ for(size_t i=0;i<f->count;i++){size_t h=binding_hash(f->slots[i].name)&255u;f->slots[i].hash_next=f->buckets[h];f->buckets[h]=&f->slots[i];}
+}
+static void free_local_frame(LocalFrame*f){
+ if(!f)return;
+ for(size_t i=0;i<f->count;i++)free_value(f->slots[i].value);
+ free(f->slots);free(f);
+}
+
+static size_t jit_name_refs(const Node*n,const char*name);
+static int jit_writes_name(const Node*n,const char*name);
+static int bc_compile_statement(ByteBuilder*b,const Node*n,const Node*owner){
+ if(!n)return 0;
+ if(!strcmp(n->kind,"Block")||!strcmp(n->kind,"Statements")||!strcmp(n->kind,"Program")){
+  for(size_t i=0;i<n->count;i++)if(!bc_compile_statement(b,n->children[i],owner))return 0;
+  return 1;
+ }
+ if(!strcmp(n->kind,"Assign")||!strcmp(n->kind,"TypedDecl")){
+  if(n->target_slot<0||n->target_owner!=owner||!n->count)return 0;
+  const Node*expr=n->children[0];
+  if(!strcmp(n->kind,"Assign")&&expr&&!strcmp(expr->kind,"Binary")&&expr->op_code==PIFARI_OP_ADD&&expr->count==2){
+   const Node*left=expr->children[0],*right=expr->children[1];
+   if(left&&!strcmp(left->kind,"Name")&&left->local_slot==n->target_slot&&left->slot_owner==owner&&right&&!strcmp(right->kind,"Binary")&&right->op_code==PIFARI_OP_MUL&&right->count==2){
+    const Node*x=right->children[0],*y=right->children[1];
+    if(x&&!strcmp(x->kind,"Name")&&y&&!strcmp(y->kind,"Name")&&x->local_slot>=0&&y->local_slot>=0&&x->slot_owner==owner&&y->slot_owner==owner){
+     ByteInstr fused={.op=BC_MADD_SLOTS,.i=n->target_slot,.target=(size_t)x->local_slot,.alternate=(size_t)y->local_slot,.slot_owner=owner};
+     return bc_emit(b,fused);
+    }
+   }
+  }
+  if(!bc_compile_node(b,expr))return 0;
+  ByteInstr in={.op=BC_STORE_SLOT,.i=n->target_slot,.slot_owner=owner};return bc_emit(b,in);
+ }
+ if(!strcmp(n->kind,"For")){
+  if(n->target_slot<0||n->target_owner!=owner||n->count<2)return 0;
+  const Node*range=n->children[0];
+  const Node*range_args=range&&range->count?range->children[0]:NULL;
+  if(!range||strcmp(range->kind,"Call")||!range->value||strcmp(range->value,"range")||!range_args||range_args->count!=1)return 0;
+  if(jit_name_refs(owner->count>1?owner->children[1]:NULL,n->value)!=jit_name_refs(n->children[1],n->value)||jit_writes_name(owner->count>1?owner->children[1]:NULL,n->value))return 0;
+  if(!bc_compile_node(b,range_args->children[0]))return 0;
+  size_t begin=b->count;
+  ByteInstr init={.op=BC_RANGE_BEGIN,.i=n->target_slot,.slot_owner=owner};
+  if(!bc_emit(b,init))return 0;
+  size_t test=b->count;
+  ByteInstr check={.op=BC_RANGE_TEST,.i=n->target_slot,.slot_owner=owner,.target=begin,.alternate=0};
+  if(!bc_emit(b,check))return 0;
+  if(!bc_compile_statement(b,n->children[1],owner))return 0;
+  ByteInstr inc={.op=BC_INC_SLOT,.i=n->target_slot,.slot_owner=owner};
+  if(!bc_emit(b,inc))return 0;
+  ByteInstr jump={.op=BC_JUMP,.target=test};
+  if(!bc_emit(b,jump))return 0;
+  b->code[test].alternate=b->count;
+  return 1;
+ }
+ if(!strcmp(n->kind,"Return")){
+  if(n->count&&!bc_compile_node(b,n->children[0]))return 0;
+  ByteInstr in={.op=BC_RETURN,.i=n->count?1:0};return bc_emit(b,in);
+ }
+ if(!strcmp(n->kind,"ExpressionStatement")){
+  if(n->count&&!bc_compile_node(b,n->children[0]))return 0;
+  ByteInstr in={.op=BC_POP};return bc_emit(b,in);
+ }
+ return 0;
+}
+static int bc_ensure_function(const Node*definition,const Node*body){
+ Node*m=(Node*)definition;
+ if(__atomic_load_n(&m->function_code_ready,__ATOMIC_ACQUIRE))return m->function_code_supported;
+ pthread_mutex_lock(&bytecode_compile_mutex);
+ if(__atomic_load_n(&m->function_code_ready,__ATOMIC_RELAXED)){
+  int ok=m->function_code_supported;pthread_mutex_unlock(&bytecode_compile_mutex);return ok;
+ }
+ ByteBuilder b={0};
+ if(bc_compile_statement(&b,body,definition)){
+  ByteInstr end={.op=BC_RETURN,.i=0};
+  if(bc_emit(&b,end)){m->function_code=b.code;m->function_code_count=b.count;m->function_code_supported=1;}
+  else free(b.code);
+ }else free(b.code);
+ __atomic_store_n(&m->function_code_ready,1,__ATOMIC_RELEASE);
+ int ok=m->function_code_supported;pthread_mutex_unlock(&bytecode_compile_mutex);return ok;
+}
+static Value execute_function_bytecode(const Node*definition,const Node*call){
+ size_t cap=definition->function_code_count+1,sp=0,pc=0;
+ Value local_stack[32];Value*stack=cap<=32?local_stack:calloc(cap,sizeof(Value));
+ long long*bounds=calloc(definition->function_code_count?definition->function_code_count:1,sizeof(long long));
+ if(!stack||!bounds){if(stack&&stack!=local_stack)free(stack);free(bounds);fail(call,"memória insuficiente na VM de função");return vnull();}
+ while(pc<definition->function_code_count&&!runtime_failed&&!return_active){
+  ByteInstr in=definition->function_code[pc];Value a,b,r=vnull();
+  switch(in.op){
+   case BC_INT:stack[sp++]=vint(in.i);pc++;break;
+   case BC_FLOAT:stack[sp++]=vfloat(in.f);pc++;break;
+   case BC_LOAD:{Binding*x=find_binding(in.name);if(!x){fail(call,"variável '%s' não foi declarada",in.name);break;}stack[sp++]=copy_value(x->value);pc++;break;}
+   case BC_LOAD_SLOT:{LocalFrame*f=find_owner_frame(in.slot_owner);if(!f||in.i<0||(size_t)in.i>=f->count){fail(call,"slot local inválido na VM de função");break;}stack[sp++]=copy_value(f->slots[in.i].value);pc++;break;}
+   case BC_NEG:
+    if(!sp){fail(call,"bytecode inválido");break;}a=stack[--sp];r=a.type==V_INT?vint(-a.as.i):vfloat(-number(a,call));free_value(a);stack[sp++]=r;pc++;break;
+   case BC_ADD:case BC_SUB:case BC_MUL:case BC_DIV:case BC_IDIV:case BC_MOD:case BC_POW:case BC_EQ:case BC_NE:case BC_LT:case BC_LE:case BC_GT:case BC_GE:case BC_INDEX:
+    if(sp<2){fail(call,"bytecode inválido");break;}
+    b=stack[--sp];a=stack[--sp];
+    if(in.op==BC_INDEX){
+     if(b.type!=V_INT||(a.type!=V_LIST&&a.type!=V_RANGE&&a.type!=V_F64_ARRAY)){free_value(a);free_value(b);fail(call,"indexação na VM de função exige lista, array tipado/range e índice inteiro");break;}
+     long long length=a.type==V_LIST?(long long)a.as.list.count:a.type==V_F64_ARRAY?(long long)a.as.array->length:a.as.range_end;long long index=b.as.i;if(index<0)index+=length;free_value(b);
+     if(index<0||index>=length){free_value(a);fail(call,"índice fora dos limites");break;}
+     r=a.type==V_RANGE?vint(index):a.type==V_F64_ARRAY?vfloat(a.as.array->data[index]):copy_value(a.as.list.items[index]);free_value(a);stack[sp++]=r;pc++;break;
+    }
+    if(in.op==BC_EQ||in.op==BC_NE){int eq=equal_values(a,b);r=vbool(in.op==BC_EQ?eq:!eq);free_value(a);free_value(b);stack[sp++]=r;pc++;break;}
+    if(in.op==BC_LT||in.op==BC_LE||in.op==BC_GT||in.op==BC_GE){
+     int cmp;if(a.type==V_STRING&&b.type==V_STRING)cmp=strcmp(a.as.s,b.as.s);else if((a.type==V_INT||a.type==V_FLOAT)&&(b.type==V_INT||b.type==V_FLOAT)){double x=number(a,call),y=number(b,call);cmp=(x>y)-(x<y);}else{free_value(a);free_value(b);fail(call,"comparação na VM exige operandos compatíveis");break;}
+     r=vbool(in.op==BC_LT?cmp<0:in.op==BC_LE?cmp<=0:in.op==BC_GT?cmp>0:cmp>=0);free_value(a);free_value(b);stack[sp++]=r;pc++;break;
+    }
+    if((a.type!=V_INT&&a.type!=V_FLOAT)||(b.type!=V_INT&&b.type!=V_FLOAT)){free_value(a);free_value(b);fail(call,"a VM de função exige operandos numéricos");break;}
+    if(in.op==BC_ADD&&a.type==V_INT&&b.type==V_INT)r=vint(a.as.i+b.as.i);
+    else if(in.op==BC_SUB&&a.type==V_INT&&b.type==V_INT)r=vint(a.as.i-b.as.i);
+    else if(in.op==BC_MUL&&a.type==V_INT&&b.type==V_INT)r=vint(a.as.i*b.as.i);
+    else {double x=number(a,call),y=number(b,call);if(in.op==BC_ADD)r=vfloat(x+y);else if(in.op==BC_SUB)r=vfloat(x-y);else if(in.op==BC_MUL)r=vfloat(x*y);else if(in.op==BC_DIV){if(y==0)fail(call,"divisão por zero");else r=vfloat(x/y);}else if(in.op==BC_IDIV){if(y==0)fail(call,"divisão por zero");else r=vint((long long)floor(x/y));}else if(in.op==BC_MOD){if(y==0)fail(call,"divisão por zero");else r=vint((long long)x%(long long)y);}else r=vfloat(pow(x,y));}
+    free_value(a);free_value(b);if(!runtime_failed)stack[sp++]=r;else free_value(r);pc++;break;
+   case BC_STORE_SLOT:{
+    LocalFrame*f=find_owner_frame(in.slot_owner);if(!f||in.i<0||(size_t)in.i>=f->count||!sp){fail(call,"slot de escrita inválido");break;}
+    free_value(f->slots[in.i].value);f->slots[in.i].value=stack[--sp];pc++;break;
+   }
+   case BC_RANGE_BEGIN:{
+    LocalFrame*f=find_owner_frame(in.slot_owner);if(!f||in.i<0||(size_t)in.i>=f->count||!sp){fail(call,"inicialização de range inválida");break;}
+    a=stack[--sp];if(a.type!=V_INT||a.as.i<0||a.as.i>1000000){free_value(a);fail(call,"range aceita inteiro entre 0 e 1000000");break;}
+    bounds[pc]=a.as.i;free_value(f->slots[in.i].value);f->slots[in.i].value=vint(0);pc++;break;
+   }
+   case BC_RANGE_TEST:{
+    LocalFrame*f=find_owner_frame(in.slot_owner);if(!f||in.i<0||(size_t)in.i>=f->count||in.target>=definition->function_code_count){fail(call,"teste de range inválido");break;}
+    Value cur=f->slots[in.i].value;
+    if(cur.type!=V_INT){fail(call,"variável de range deve ser inteira");break;}
+    if(cur.as.i>=bounds[in.target])pc=in.alternate;else pc++;break;
+   }
+   case BC_INC_SLOT:{
+    LocalFrame*f=find_owner_frame(in.slot_owner);if(!f||in.i<0||(size_t)in.i>=f->count||f->slots[in.i].value.type!=V_INT){fail(call,"incremento de slot inválido");break;}
+    f->slots[in.i].value.as.i++;pc++;break;
+   }
+   case BC_JUMP:if(in.target>=definition->function_code_count){fail(call,"salto inválido na VM");break;}pc=in.target;break;
+   case BC_RETURN:
+    if(in.i){if(!sp){fail(call,"return sem valor na VM");break;}return_value=stack[--sp];}
+    else return_value=vnull();
+    return_active=1;pc=definition->function_code_count;break;
+   case BC_POP:if(sp)free_value(stack[--sp]);pc++;break;
+   case BC_MADD_SLOTS:{
+    LocalFrame*f=find_owner_frame(in.slot_owner);
+    if(!f||in.i<0||(size_t)in.i>=f->count||in.target>=f->count||in.alternate>=f->count){fail(call,"slots inválidos na operação fundida");break;}
+    Value*acc=&f->slots[in.i].value;Value*x=&f->slots[in.target].value;Value*y=&f->slots[in.alternate].value;
+    if((acc->type!=V_INT&&acc->type!=V_FLOAT)||(x->type!=V_INT&&x->type!=V_FLOAT)||(y->type!=V_INT&&y->type!=V_FLOAT)){fail(call,"operação fundida exige números");break;}
+    if(acc->type==V_INT&&x->type==V_INT&&y->type==V_INT)acc->as.i+=x->as.i*y->as.i;
+    else {double total=number(*acc,call)+number(*x,call)*number(*y,call);acc->type=V_FLOAT;acc->as.f=total;}
+    pc++;break;
+   }
+   default:fail(call,"opcode inválido na VM de função");break;
+  }
+ }
+ for(size_t i=0;i<sp;i++)free_value(stack[i]);
+ if(stack!=local_stack)free(stack);
+ free(bounds);
+ return vnull();
+}
+static Value call_user_function(const Node *call,const Node *definition){
+ const Node *params=definition->count?definition->children[0]:NULL;
+ const Node *body=definition->count>1?definition->children[1]:NULL;
+ const Node *args=call->count?call->children[0]:NULL;
+ size_t pc=params?params->count:0,ac=args?args->count:0;
+ if(pc!=ac){fail(call,"função '%s' espera %zu argumento(s), recebeu %zu",definition->value,pc,ac);return vnull();}
+ Value *values=calloc(ac?ac:1,sizeof(Value));
+ for(size_t i=0;i<ac;i++){values[i]=eval(args->children[i]);if(runtime_failed){for(size_t j=0;j<=i;j++)free_value(values[j]);free(values);return vnull();}}
+ for(FunctionDef*fn=functions;fn;fn=fn->next)if(fn->node==definition&&fn->jit_fn&&ac==1&&values[0].type==V_INT){
+  long long arg=values[0].as.i;
+  if(fn->jit_requires_range&&(arg<0||arg>1000000)){free_value(values[0]);free(values);fail(call,"range aceita inteiro entre 0 e 1000000");return vnull();}
+  long long result=fn->jit_fn(arg);free_value(values[0]);free(values);
+  return vint(result);
+ }
+ LocalFrame *frame=calloc(1,sizeof(*frame));
+ if(!frame){for(size_t i=0;i<ac;i++)free_value(values[i]);free(values);fail(call,"memória insuficiente ao criar frame local");return vnull();}
+ const Node *slot_body=body;
+ size_t cap=count_nodes(slot_body)+(params?params->count:0);
+ frame->slots=calloc(cap?cap:1,sizeof(Binding));
+ if(!frame->slots){free(frame);for(size_t i=0;i<ac;i++)free_value(values[i]);free(values);fail(call,"memória insuficiente para slots locais");return vnull();}
+ size_t used=0;
+ if(params)for(size_t i=0;i<params->count;i++){
+  const char*name=params->children[i]->value;int found=0;
+  for(size_t j=0;j<used;j++)if(!strcmp(frame->slots[j].name,name)){found=1;break;}
+  if(!found)frame->slots[used++].name=(char*)name;
+ }
+ collect_slot_names(slot_body,frame->slots,&used,cap);frame->count=used;frame->owner=definition;annotate_slot_nodes((Node*)slot_body,frame->slots,used,definition);
+ /* Initialize slots from the caller-visible environment to preserve the previous
+    isolated-environment semantics, but keep the frame contiguous and hash-indexed. */
+ for(size_t i=0;i<used;i++){Binding*old=find_binding(frame->slots[i].name);frame->slots[i].value=old?copy_value(old->value):vnull();}
+ for(size_t i=0;i<pc;i++){
+  size_t j=0;while(j<used&&strcmp(frame->slots[j].name,params->children[i]->value))j++;
+  if(j<used){free_value(frame->slots[j].value);frame->slots[j].value=values[i];values[i]=vnull();}
+ }
+ free(values);build_slot_index(frame);frame->parent=local_frame;LocalFrame*saved_frame=local_frame;local_frame=frame;
+ int saved_return_active=return_active;Value saved_return_value=return_value;
+ return_active=0;return_value=vnull();
+ Value implicit_result=vnull();
+ if(strcmp(definition->kind,"FunctionExpr")&&bc_ensure_function(definition,body)){
+  (void)execute_function_bytecode(definition,call);
+ }else if(!strcmp(definition->kind,"FunctionExpr")&&body&&!strcmp(body->kind,"Block")&&body->count){
+  for(size_t i=0;i+1<body->count&&!runtime_failed&&!return_active;i++)exec_node(body->children[i]);
+  if(!runtime_failed&&!return_active){const Node *last=body->children[body->count-1];if(!strcmp(last->kind,"ExpressionStatement")&&last->count)implicit_result=eval(last->children[0]);else exec_node(last);}
+ }else exec_node(body);
+ Value result=return_active?return_value:implicit_result;
+ if(!return_active)free_value(return_value);
+ local_frame=saved_frame;free_local_frame(frame);
+ return_active=saved_return_active;return_value=saved_return_value;
+ return result;
+}
+typedef struct {
+ size_t next, count;
+ Value *items, *results;
+ const Node *target, *variable, *at;
+ Binding *base;
+ pthread_mutex_t lock;
+ int errors;
+} ParallelWork;
+/* Worker environments use shallow binding nodes: the base values are immutable
+   during a flow, while loop variables and function locals live in slot frames. */
+static Binding *clone_bindings(Binding *src){
+ Binding *copy=NULL;
+ for(Binding *b=src;b;b=b->next){Binding *n=calloc(1,sizeof(*n));if(!n)exit(2);n->name=b->name;n->value=b->value;n->next=copy;copy=n;}
+ return copy;
+}
+static void free_binding_nodes(Binding*b){while(b){Binding*next=b->next;free(b);b=next;}}
+#define PIFARI_POOL_SIZE 4
+typedef struct {
+ pthread_mutex_t mutex;
+ pthread_cond_t work_ready, work_done;
+ pthread_t threads[PIFARI_POOL_SIZE];
+ size_t started, pending, active_workers;
+ unsigned long generation;
+ int shutdown, initialized;
+ ParallelWork *work;
+} PersistentPool;
+static PersistentPool worker_pool={.mutex=PTHREAD_MUTEX_INITIALIZER,.work_ready=PTHREAD_COND_INITIALIZER,.work_done=PTHREAD_COND_INITIALIZER};
+static void parallel_process_work(ParallelWork*w){
+ globals=clone_bindings(w->base);rebuild_binding_index();runtime_failed=0;
+ Binding iteration_slot={.name=w->variable->value,.value={.type=V_NULL}};
+ LocalFrame iteration_frame={.slots=&iteration_slot,.count=1};
+ size_t iteration_hash=binding_hash(iteration_slot.name)&255u;
+ iteration_frame.buckets[iteration_hash]=&iteration_slot;iteration_frame.parent=NULL;local_frame=&iteration_frame;
+ for(;;){
+  size_t i=__atomic_fetch_add(&w->next,1,__ATOMIC_RELAXED);
+  if(i>=w->count)break;
+  set_binding(w->variable->value,copy_value(w->items[i]),w->at,0);
+  w->results[i]=eval_call(w->target);
+  if(runtime_failed){pthread_mutex_lock(&w->lock);w->errors=1;pthread_mutex_unlock(&w->lock);runtime_failed=0;}
+ }
+ free_value(iteration_slot.value);local_frame=NULL;
+ free_binding_nodes(globals);globals=NULL;memset(binding_buckets,0,sizeof(binding_buckets));
+}
+static void *persistent_worker(void*opaque){
+ size_t worker_index=(size_t)(uintptr_t)opaque;unsigned long seen=0;
+ for(;;){
+  pthread_mutex_lock(&worker_pool.mutex);
+  while(!worker_pool.shutdown&&worker_pool.generation==seen)pthread_cond_wait(&worker_pool.work_ready,&worker_pool.mutex);
+  if(worker_pool.shutdown){pthread_mutex_unlock(&worker_pool.mutex);break;}
+  seen=worker_pool.generation;ParallelWork*w=worker_pool.work;
+  int active=worker_index<worker_pool.active_workers;
+  pthread_mutex_unlock(&worker_pool.mutex);
+  if(active)parallel_process_work(w);
+  pthread_mutex_lock(&worker_pool.mutex);
+  if(worker_pool.pending&&--worker_pool.pending==0)pthread_cond_signal(&worker_pool.work_done);
+  pthread_mutex_unlock(&worker_pool.mutex);
+ }
+ return NULL;
+}
+static void pool_initialize(void){
+ pthread_mutex_lock(&worker_pool.mutex);
+ if(!worker_pool.initialized){
+  worker_pool.initialized=1;
+  for(size_t i=0;i<PIFARI_POOL_SIZE;i++)if(pthread_create(&worker_pool.threads[worker_pool.started],NULL,persistent_worker,(void*)(uintptr_t)worker_pool.started)==0)worker_pool.started++;
+ }
+ pthread_mutex_unlock(&worker_pool.mutex);
+}
+static void pool_run(ParallelWork*w){
+ pool_initialize();
+ if(!worker_pool.started){parallel_process_work(w);return;}
+ pthread_mutex_lock(&worker_pool.mutex);
+ worker_pool.work=w;worker_pool.active_workers=w->count<worker_pool.started?w->count:worker_pool.started;worker_pool.pending=worker_pool.started;worker_pool.generation++;
+ pthread_cond_broadcast(&worker_pool.work_ready);
+ while(worker_pool.pending)pthread_cond_wait(&worker_pool.work_done,&worker_pool.mutex);
+ worker_pool.work=NULL;
+ pthread_mutex_unlock(&worker_pool.mutex);
+}
+static void pool_shutdown(void){
+ pthread_mutex_lock(&worker_pool.mutex);
+ if(!worker_pool.initialized){pthread_mutex_unlock(&worker_pool.mutex);return;}
+ worker_pool.shutdown=1;pthread_cond_broadcast(&worker_pool.work_ready);
+ pthread_mutex_unlock(&worker_pool.mutex);
+ for(size_t i=0;i<worker_pool.started;i++)pthread_join(worker_pool.threads[i],NULL);
+ pthread_mutex_lock(&worker_pool.mutex);worker_pool.started=0;worker_pool.initialized=0;worker_pool.shutdown=0;worker_pool.generation=0;pthread_mutex_unlock(&worker_pool.mutex);
+}
+/* Fast path: the AST itself proves that this parallel flow is a pure,
+   single-argument numeric map. In that case skip per-item Value/function calls. */
+static int try_native_map_flow(const Node *target, const Node *variable,
+                               Value sequence, Value *result) {
+ if(!target||strcmp(target->kind,"Call")||target->count!=1||
+    !target->children[0]||target->children[0]->count!=1) return 0;
+ const Node *argument=target->children[0]->children[0];
+ if(!argument||strcmp(argument->kind,"Name")||
+    strcmp(argument->value,variable->value)) return 0;
+
+ FunctionDef *function=NULL;
+ for(FunctionDef *f=functions;f;f=f->next)
+  if(!strcmp(f->name,target->value?target->value:"")){function=f;break;}
+ if(!function||!function->ir_ready||sequence.type!=V_LIST) return 0;
+
+ size_t length=sequence.as.list.count;
+ for(size_t i=0;i<length;i++)
+  if(sequence.as.list.items[i].type!=V_INT&&
+     sequence.as.list.items[i].type!=V_FLOAT) return 0;
+
+ if(!function->native_kernel&&
+    pifari_native_kernel_create(&function->ir,&function->native_kernel)!=0)
+  return 0;
+
+ PifariF64Buffer input={0},output={0};
+ if(pifari_f64_buffer_init(&input,length)!=0||
+    pifari_f64_buffer_init(&output,length)!=0){
+  pifari_f64_buffer_destroy(&input);pifari_f64_buffer_destroy(&output);
+  fail(target,"memoria insuficiente ao preparar kernel fundido");
+  return -1;
+ }
+ for(size_t i=0;i<length;i++)input.data[i]=number(sequence.as.list.items[i],target);
+ int status=pifari_native_kernel_map(function->native_kernel,input.data,
+                                     output.data,length,PIFARI_POOL_SIZE);
+ if(status!=0){
+  pifari_f64_buffer_destroy(&input);pifari_f64_buffer_destroy(&output);
+  fail(target,status==-2?"divisao por zero no kernel fundido":
+                          "falha ao executar kernel nativo fundido");
+  return -1;
+ }
+ Value mapped=list_new(length);
+ if(mapped.type!=V_LIST){
+  pifari_f64_buffer_destroy(&input);pifari_f64_buffer_destroy(&output);
+  fail(target,"memoria insuficiente no resultado do kernel fundido");
+  return -1;
+ }
+ for(size_t i=0;i<length;i++)mapped.as.list.items[i]=vfloat(output.data[i]);
+ pifari_f64_buffer_destroy(&input);pifari_f64_buffer_destroy(&output);
+ *result=mapped;
+ return 1;
+}
+
+static Value eval_parallel_flow(const Node *n){
+ const Node *source=n->count>0?n->children[0]:NULL,*target=n->count>1?n->children[1]:NULL;
+ if(!source||strcmp(source->kind,"Flow")||strcmp(source->value,">|")||source->count<2||!target||strcmp(target->kind,"Call")){
+  fail(n,"use o fluxo paralelo como iterável >| variável >| função(variável)");return vnull();
+ }
+ const Node *iterable=source->children[0],*variable=source->children[1];
+ if(strcmp(variable->kind,"Name")){fail(n,"o nome após >| deve ser um identificador");return vnull();}
+ Value seq=eval(iterable);if(runtime_failed){free_value(seq);return vnull();}
+ Value fused_result=vnull();
+ int fused_status=try_native_map_flow(target,variable,seq,&fused_result);
+ if(fused_status!=0){free_value(seq);return fused_status>0?fused_result:vnull();}
+ size_t count=seq.type==V_LIST?seq.as.list.count:seq.type==V_F64_ARRAY?seq.as.array->length:((seq.type==V_STRING)?strlen(seq.as.s):((seq.type==V_RANGE)?(size_t)seq.as.range_end:0));
+ if(seq.type!=V_LIST&&seq.type!=V_STRING&&seq.type!=V_RANGE){fail(n,"o lado esquerdo de >| deve ser uma lista, texto ou range");free_value(seq);return vnull();}
+ Value *items=NULL;
+ if(seq.type==V_LIST){
+  /* Transfer ownership of the evaluated list buffer instead of deep-copying every
+     element into a second array; workers copy only the current item into their slot. */
+  items=seq.as.list.items;
+ }else{
+  items=calloc(count?count:1,sizeof(Value));
+  if(!items){free_value(seq);fail(n,"memória insuficiente ao preparar tarefas paralelas");return vnull();}
+  for(size_t i=0;i<count;i++){if(seq.type==V_RANGE)items[i]=vint((long long)i);else if(seq.type==V_F64_ARRAY)items[i]=vfloat(seq.as.array->data[i]);else{char c[2]={seq.as.s[i],0};items[i]=vstr(c);}}
+ }
+ Value out=list_new(count);
+ if(out.type!=V_LIST){if(seq.type!=V_LIST){for(size_t i=0;i<count;i++)free_value(items[i]);free(items);}free_value(seq);fail(n,"memória insuficiente para resultados paralelos");return vnull();}
+ ParallelWork w={.next=0,.count=count,.items=items,.results=out.as.list.items,.target=target,.variable=variable,.at=n,.base=globals,.errors=0,.lock=PTHREAD_MUTEX_INITIALIZER};
+ if(count)pool_run(&w);
+ if(seq.type!=V_LIST){for(size_t i=0;i<count;i++)free_value(items[i]);free(items);}
+ free_value(seq);pthread_mutex_destroy(&w.lock);
+ if(w.errors&&!runtime_failed)fail(n,"uma ou mais tarefas paralelas falharam");
+ return out;
+}
+/* Resolve nested list indexing without deep-copying each intermediate matrix row.
+   The returned pointer is borrowed from the current environment and must not escape. */
+static Value *resolve_list_reference(const Node*n){
+ if(!n)return NULL;
+ if(!strcmp(n->kind,"Name")){
+  Binding*b=find_binding(n->value);
+  return b?&b->value:NULL;
+ }
+ if(!strcmp(n->kind,"Index")&&n->count==2){
+  Value*base=resolve_list_reference(n->children[0]);
+  if(!base||base->type!=V_LIST)return NULL;
+  Value idx=eval(n->children[1]);
+  if(runtime_failed){free_value(idx);return NULL;}
+  if(idx.type!=V_INT){free_value(idx);fail(n,"índice deve ser inteiro");return NULL;}
+  long long i=idx.as.i;if(i<0)i+=(long long)base->as.list.count;
+  free_value(idx);
+  if(i<0||(size_t)i>=base->as.list.count){fail(n,"índice fora dos limites");return NULL;}
+  return &base->as.list.items[i];
+ }
+ return NULL;
+}
+static Value eval(const Node*n){
+ if(!n||runtime_failed)return vnull();
+ profile_inc(&profile_eval_nodes);
+ if(n->constant_folded)return n->constant_is_float?vfloat(n->constant_float):vint(n->constant_integer);
+ if(!strcmp(n->kind,"Integer")){if(n->numeric_cached)return vint(n->integer_cache);char*e;long long x=strtoll(n->value,&e,10);if(*e){fail(n,"inteiro inválido");return vnull();}return vint(x);}
+ if(!strcmp(n->kind,"Float")){if(n->numeric_cached)return vfloat(n->float_cache);char*e;double x=strtod(n->value,&e);if(*e){fail(n,"real inválido");return vnull();}return vfloat(x);}
+ if(!strcmp(n->kind,"String"))return vstr(n->value);
+ if(!strcmp(n->kind,"Boolean"))return vbool(!strcmp(n->value,"true"));
+ if(!strcmp(n->kind,"Null"))return vnull();
+ if(!strcmp(n->kind,"Name")){
+  if(n->local_slot>=0&&n->slot_owner){LocalFrame*f=find_owner_frame(n->slot_owner);if(f&&(size_t)n->local_slot<f->count)return copy_value(f->slots[n->local_slot].value);}
+  Binding*b=find_binding(n->value);if(!b){fail(n,"variável '%s' não foi declarada",n->value);return vnull();}return copy_value(b->value);
+ }
+ if(!strcmp(n->kind,"Binary")){if(bc_ensure(n))return eval_bytecode(n);return eval_binary(n);}
+ if(!strcmp(n->kind,"Unary")){
+  if(bc_ensure(n))return eval_bytecode(n);
+  Value v=eval(n->children[0]),result=vnull();
+  if(!strcmp(n->value,"-")){if(v.type==V_INT)result=vint(-v.as.i);else result=vfloat(-number(v,n));}
+  else if(!strcmp(n->value,"not"))result=vbool(!truthy(v));
+  else fail(n,"operador unário não suportado: %s",n->value);
+  free_value(v);return runtime_failed?vnull():result;
+ }
+ if(!strcmp(n->kind,"Call"))return eval_call(n);
+ if(!strcmp(n->kind,"List")){const Node*a=n->count?n->children[0]:NULL;size_t count=a?a->count:0;Value v=list_new(count);if(v.type!=V_LIST){fail(n,"memória insuficiente ao criar lista");return vnull();}for(size_t i=0;i<count;i++){v.as.list.items[i]=eval(a->children[i]);if(runtime_failed){free_value(v);return vnull();}}return v;}
+ if(!strcmp(n->kind,"Index")){
+  if(bc_ensure(n))return eval_bytecode(n);
+  /* Fast path for list/matrix indexing: borrow the base list and copy only
+     the selected value, rather than recursively cloning the entire list. */
+  if(n->count==2&&(!strcmp(n->children[0]->kind,"Name")||!strcmp(n->children[0]->kind,"Index"))){
+   Value*base=resolve_list_reference(n->children[0]);
+   if(base&&(base->type==V_LIST||base->type==V_F64_ARRAY)){
+    Value idx=eval(n->children[1]);
+    if(runtime_failed){free_value(idx);return vnull();}
+    if(idx.type!=V_INT){free_value(idx);fail(n,"indexação exige índice inteiro");return vnull();}
+    long long length=base->type==V_LIST?(long long)base->as.list.count:(long long)base->as.array->length;
+    long long i=idx.as.i;if(i<0)i+=length;free_value(idx);
+    if(i<0||i>=length){fail(n,"índice fora dos limites");return vnull();}
+    return base->type==V_F64_ARRAY?vfloat(base->as.array->data[i]):copy_value(base->as.list.items[i]);
+   }
+   if(runtime_failed)return vnull();
+  }
+  Value v=eval(n->children[0]),idx=eval(n->children[1]);
+  if((v.type!=V_LIST&&v.type!=V_RANGE&&v.type!=V_F64_ARRAY)||idx.type!=V_INT){free_value(v);free_value(idx);fail(n,"indexação exige lista, array tipado/range e índice inteiro");return vnull();}
+  long long count=v.type==V_LIST?(long long)v.as.list.count:v.type==V_F64_ARRAY?(long long)v.as.array->length:v.as.range_end;
+  long long i=idx.as.i;if(i<0)i+=count;
+  if(i<0||i>=count){free_value(v);free_value(idx);fail(n,"índice fora dos limites");return vnull();}
+  Value result=v.type==V_RANGE?vint(i):v.type==V_F64_ARRAY?vfloat(v.as.array->data[i]):copy_value(v.as.list.items[i]);
+  free_value(v);free_value(idx);return result;
+ }
+ if(!strcmp(n->kind,"Flow")&&!strcmp(n->value,">|"))return eval_parallel_flow(n);
+ if(!strcmp(n->kind,"Flow")&&!strcmp(n->value,"<|")){
+  if(n->count<2){fail(n,"operador <| exige uma continuação à direita");return vnull();}
+  Value completed=eval(n->children[0]);free_value(completed);if(runtime_failed)return vnull();
+  return eval(n->children[1]);
+ }
+ if(!strcmp(n->kind,"Flow")&&!strcmp(n->value,"|<")){
+  if(n->count<2||strcmp(n->children[1]->kind,"Name")){fail(n,"use |< nome_da_colecao para guardar os resultados");return vnull();}
+  Value collected=eval(n->children[0]);if(runtime_failed){free_value(collected);return vnull();}
+  if(collected.type!=V_LIST){free_value(collected);fail(n,"|< só pode coletar os resultados de um fluxo que retorna uma lista");return vnull();}
+  set_node_binding(n,n->children[1]->value,collected,n);return vnull();
+ }
+ if(!strcmp(n->kind,"Flow")&&!strcmp(n->value,"|>")){
+  const Node *source=n->count>0?n->children[0]:NULL,*target=n->count>1?n->children[1]:NULL;
+  if(!source||strcmp(source->kind,"Flow")||strcmp(source->value,"|>")||source->count<2||!target||strcmp(target->kind,"Call")){
+   fail(n,"use o fluxo como iterável |> variável |> função(variável)");return vnull();
+  }
+  const Node *iterable_node=source->children[0],*variable_node=source->children[1];
+  if(strcmp(variable_node->kind,"Name")){fail(n,"o nome após |> deve ser um identificador");return vnull();}
+  Value seq=eval(iterable_node);
+  if(seq.type==V_LIST){Binding *loop_binding=find_binding(variable_node->value);for(size_t i=0;i<seq.as.list.count&&!runtime_failed;i++){loop_binding=set_loop_binding(loop_binding,variable_node->value,copy_value(seq.as.list.items[i]),n);(void)eval_call(target);}}
+  else if(seq.type==V_RANGE){Binding *loop_binding=find_binding(variable_node->value);for(long long i=0;i<seq.as.range_end&&!runtime_failed;i++){loop_binding=set_loop_binding(loop_binding,variable_node->value,vint(i),n);(void)eval_call(target);}}
+  else if(seq.type==V_STRING){Binding *loop_binding=find_binding(variable_node->value);for(size_t i=0;seq.as.s[i]&&!runtime_failed;i++){char c[2]={seq.as.s[i],0};loop_binding=set_loop_binding(loop_binding,variable_node->value,vstr(c),n);(void)eval_call(target);}}
+  else fail(n,"o lado esquerdo do fluxo deve ser uma lista, texto ou range");
+  free_value(seq);return vnull();
+ }
+ fail(n,"expressão não suportada: %s",n->kind);return vnull();
+}
+static void exec_block(const Node*n){if(!n)return;for(size_t i=0;i<n->count&&!runtime_failed&&!return_active;i++)exec_node(n->children[i]);}
+static void exec_node(const Node*n){
+ if(!n||runtime_failed)return;
+ if(!strcmp(n->kind,"Program")||!strcmp(n->kind,"Block")||!strcmp(n->kind,"Statements")){exec_block(n);return;}
+ if(!strcmp(n->kind,"TypedDecl")||!strcmp(n->kind,"Attribute")){
+  if(!n->value||!n->count){fail(n,"declaração tipada inválida");return;}
+  const Node*init=NULL;
+  if(!strcmp(n->kind,"TypedDecl")){if(n->count>1)init=n->children[1];else if(n->count==1&&strcmp(n->children[0]->kind,"Type"))init=n->children[0];}
+  Value v=init?eval(init):vnull();if(runtime_failed)return;
+  set_node_binding(n,n->value,v,n);return;
+ }
+ if(!strcmp(n->kind,"IndexAssign")){
+  Binding *binding=n->value?find_binding(n->value):NULL;if(!binding){fail(n,"array '%s' não foi declarado",n->value?n->value:"?");return;}
+  if(binding->value.type!=V_F64_ARRAY||!binding->value.as.array){fail(n,"atribuição indexada exige um array tipado f64_array");return;}
+  Value idx=eval(n->children[0]);if(runtime_failed){free_value(idx);return;}Value val=eval(n->children[1]);if(runtime_failed){free_value(idx);free_value(val);return;}
+  if(idx.type!=V_INT||(val.type!=V_INT&&val.type!=V_FLOAT)){free_value(idx);free_value(val);fail(n,"índice deve ser inteiro e valor deve ser numérico");return;}
+  long long i=idx.as.i;size_t length=binding->value.as.array->length;if(i<0)i+=(long long)length;
+  if(i<0||(size_t)i>=length){free_value(idx);free_value(val);fail(n,"índice fora dos limites");return;}
+  binding->value.as.array->data[i]=number(val,n);free_value(idx);free_value(val);return;
+ }
+ if(!strcmp(n->kind,"Assign")){if(!n->value||!n->count){fail(n,"atribuição inválida");return;}Value v=eval(n->children[0]);if(!runtime_failed)set_node_binding(n,n->value,v,n);return;}
+ if(!strcmp(n->kind,"ExpressionStatement")){if(n->count)(void)eval(n->children[0]);return;}
+ if(!strcmp(n->kind,"If")){if(n->count>=2){Value c=eval(n->children[0]);if(truthy(c))exec_node(n->children[1]);free_value(c);}return;}
+ if(!strcmp(n->kind,"IfElse")){if(n->count>=2){const Node*condition=n->children[0];Value c=condition->count?eval(condition->children[0]):vnull();if(truthy(c)){if(condition->count>1)exec_node(condition->children[1]);}else exec_node(n->children[1]);free_value(c);}return;}
+ if(!strcmp(n->kind,"IfElseIf")){if(n->count>=2){const Node*c=n->children[0],*e=n->children[1];Value v=c->count?eval(c->children[0]):vnull();if(truthy(v)){if(c->count>1)exec_node(c->children[1]);}else if(e->count>1){Value ev=eval(e->children[0]);if(truthy(ev))exec_node(e->children[1]);free_value(ev);}free_value(v);}return;}
+ if(!strcmp(n->kind,"For")){if(n->count<2){fail(n,"laço for inválido");return;}Value seq=eval(n->children[0]);if(seq.type==V_LIST){Binding *loop_binding=find_binding(n->value);for(size_t i=0;i<seq.as.list.count&&!runtime_failed&&!return_active;i++){loop_binding=set_loop_binding(loop_binding,n->value,copy_value(seq.as.list.items[i]),n);exec_node(n->children[1]);}}else if(seq.type==V_F64_ARRAY){Binding *loop_binding=find_binding(n->value);for(size_t i=0;i<seq.as.array->length&&!runtime_failed&&!return_active;i++){loop_binding=set_loop_binding(loop_binding,n->value,vfloat(seq.as.array->data[i]),n);exec_node(n->children[1]);}}else if(seq.type==V_RANGE){Binding *loop_binding=find_binding(n->value);for(long long i=0;i<seq.as.range_end&&!runtime_failed&&!return_active;i++){loop_binding=set_loop_binding(loop_binding,n->value,vint(i),n);exec_node(n->children[1]);}}else if(seq.type==V_STRING){Binding *loop_binding=find_binding(n->value);for(size_t i=0;seq.as.s[i]&&!runtime_failed&&!return_active;i++){char c[2]={seq.as.s[i],0};loop_binding=set_loop_binding(loop_binding,n->value,vstr(c),n);exec_node(n->children[1]);}}else fail(n,"for exige uma lista, texto ou range iterável");free_value(seq);return;}
+ if(!strcmp(n->kind,"Return")){if(return_active){fail(n,"return aninhado inválido");return;}Value v=n->count?eval(n->children[0]):vnull();if(!runtime_failed){return_value=v;return_active=1;}return;}
+ if(!strcmp(n->kind,"Function")||!strcmp(n->kind,"FunctionExpr")){
+  for(FunctionDef*f=functions;f;f=f->next)if(!strcmp(f->name,n->value)){
+   fail(n,"função '%s' já foi definida",n->value);return;
+  }
+  FunctionDef*f=calloc(1,sizeof(*f));
+  if(!f){fail(n,"memória insuficiente ao registrar função");return;}
+  f->name=n->value;f->node=n;f->next=functions;functions=f;
+  char ir_error[160];
+  if(pifari_ast_function_to_ir(n,&f->ir,ir_error,sizeof(ir_error))==0)
+   f->ir_ready=1;
+  jit_compile_function(f);
+  return;
+ }
+ if(!strcmp(n->kind,"Break")||!strcmp(n->kind,"Continue")){fail(n,"%s ainda não é suportado pelo runtime",n->kind);return;}
+ if(!strcmp(n->kind,"Import")||!strcmp(n->kind,"Include")||!strcmp(n->kind,"LinkTo")){fprintf(stderr,"Pifari:%d:%d: aviso: diretiva '%s' reconhecida, mas carregamento/linkagem ainda não implementado\n",n->line,n->column,n->kind);return;}
+ if(!strcmp(n->kind,"Class")){fail(n,"classes são reconhecidas pelo parser, mas objetos e métodos ainda não são executáveis");return;}
+ (void)eval(n);
+}
+int runtime_execute(const Node*program){
+ profiling_enabled=getenv("PIFARI_PROFILE")!=NULL;
+ profile_eval_nodes=profile_binding_lookups=profile_value_copies=profile_bytecode_ops=0;
+ globals=NULL;local_frame=NULL;memset(binding_buckets,0,sizeof(binding_buckets));runtime_failed=0;return_active=0;return_value=vnull();
+ free_function_registry();
+ exec_node(program);
+ pool_shutdown();
+ Binding*b=globals;while(b){Binding*next=b->next;free(b->name);free_value(b->value);free(b);b=next;}globals=NULL;memset(binding_buckets,0,sizeof(binding_buckets));
+ free_function_registry();
+ chain_kernel_cache_clear();
+ free_value(return_value);return_value=vnull();return_active=0;
+ if(profiling_enabled)fprintf(stderr,"PIFARI_PROFILE eval_nodes=%llu binding_lookups=%llu value_copies=%llu bytecode_ops=%llu\n",profile_eval_nodes,profile_binding_lookups,profile_value_copies,profile_bytecode_ops);
+ return runtime_failed?1:0;
+}

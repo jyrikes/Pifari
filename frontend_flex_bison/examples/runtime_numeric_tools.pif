@@ -1,0 +1,9 @@
+valores = [9, 1, 5, 1, 3]
+ordenados = sort(valores)
+print(ordenados)
+print(binary_search(ordenados, 5))
+print(binary_search(ordenados, 7))
+A = [[3, 2], [1, 2]]
+b = [18, 14]
+x = solve_linear(A, b)
+print(x)

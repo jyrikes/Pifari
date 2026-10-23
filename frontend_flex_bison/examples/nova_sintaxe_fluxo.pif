@@ -1,0 +1,20 @@
+@ Nova sintaxe de funções e operadores de fluxo
+dobrar : (x) {
+    x * 2
+}
+
+somar10 : (x) {
+    x + 10
+}
+
+numeros = [1, 2, 3, 4]
+
+@ Fluxo sequencial: aplica a função em cada elemento, em ordem
+numeros |> numero |> print(dobrar(numero))
+
+@ Fluxo paralelo: cada elemento é processado por um worker
+numeros >| numero >| dobrar(numero) |< resultados
+print(resultados)
+
+@ Barreira: só continua quando o fluxo paralelo terminar
+numeros >| numero >| print(dobrar(numero)) <| print("fluxo concluído")

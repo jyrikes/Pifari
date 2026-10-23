@@ -1,0 +1,62 @@
+@ Carga grande escrita na filosofia de fluxo do Pifari.
+@ Sem for/while: range gera dados e os operadores descrevem o processamento.
+@ Cada elemento passa por tres transformacoes numericas independentes.
+
+function identidade(x)
+    return x
+
+function escalar(x)
+    return x * 1.0001 + 3
+
+function misturar(x)
+    return (x * 1.25 - 7) / 1.1
+
+function ativar(x)
+    return x * x / (x * x + 1)
+
+N = 500000
+fontes = range(N)
+
+print("=== PIFARI: CARGA DE FLUXO ===")
+print("elementos", N)
+print("etapas", 3)
+
+@ |> demonstra o mesmo modelo em fluxo sequencial, sem for.
+range(8) |> amostra |> print("sequencial_demo", identidade(amostra))
+
+fontes >| x >| identidade(x) |< dados
+
+@ Mede somente as tres etapas, usando a mesma entrada para os dois caminhos.
+inicio = agora_ns()
+dados >| x >| escalar(x) |< etapa1
+etapa1 >| x >| misturar(x) |< etapa2
+etapa2 >| x >| ativar(x) |< paralelo
+fim = agora_ns()
+
+print("fluxo_paralelo_ms", (fim - inicio) / 1000000)
+print("paralelo_quantidade", len(paralelo))
+print("paralelo_inicio", paralelo[0])
+print("paralelo_meio", paralelo[250000])
+print("paralelo_fim", paralelo[-1])
+
+@ O kernel fundido e a referencia otimizada de tres etapas para comparar.
+inicio_nativo = agora_ns()
+fundido = map_fused_chain(["escalar", "misturar", "ativar"], dados)
+fim_nativo = agora_ns()
+
+print("cadeia_fundida_ms_inclui_compilacao", (fim_nativo - inicio_nativo) / 1000000)
+print("fundido_quantidade", len(fundido))
+print("fundido_inicio", fundido[0])
+print("fundido_meio", fundido[250000])
+print("fundido_fim", fundido[-1])
+
+@ Segunda chamada mede o caminho aquecido, reutilizando o kernel compilado.
+inicio_aquecido = agora_ns()
+fundido_quente = map_fused_chain(["escalar", "misturar", "ativar"], dados)
+fim_aquecido = agora_ns()
+
+print("cadeia_fundida_ms_aquecido", (fim_aquecido - inicio_aquecido) / 1000000)
+print("fundido_quente_fim", fundido_quente[-1])
+
+@ Barreira explicita: nenhum resumo final aparece antes de as tarefas acabarem.
+range(N) >| tarefa >| identidade(tarefa) <| print("barreira: processamento de todas as tarefas concluido")

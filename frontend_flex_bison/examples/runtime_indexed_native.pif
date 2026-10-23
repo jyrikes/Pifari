@@ -1,0 +1,16 @@
+function transformar(A, i)
+    return A[i] * 2 + 3
+
+dados = f64_array([0, 1, 2, 3, 4, 5])
+resultado = map_indexed_native("transformar", dados)
+print(resultado)
+print(resultado[0])
+print(resultado[-1])
+
+array_set(resultado, 0, 99)
+print(resultado[0])
+
+function calcular(A, indice)
+    return (A[indice] + 10) / 2
+
+print(map_indexed_native("calcular", dados))

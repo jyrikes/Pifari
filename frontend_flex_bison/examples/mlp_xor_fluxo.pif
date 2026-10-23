@@ -1,0 +1,77 @@
+@ MLP XOR 2-4-1 usando a sintaxe de fluxo planejada do Pifari.
+@ O treino SGD depende da atualizacao sequencial dos pesos.
+@ A inferencia, com pesos fixos, e independente por amostra e pode rodar em paralelo.
+
+function sigmoid(x)
+    return 1 / (1 + exp(0 - x))
+
+function prever(x1, x2)
+    z1 = pesos[0] * x1 + pesos[1] * x2 + pesos[2]
+    z2 = pesos[3] * x1 + pesos[4] * x2 + pesos[5]
+    h1 = sigmoid(z1)
+    h2 = sigmoid(z2)
+    return sigmoid(pesos[6] * h1 + pesos[7] * h2 + pesos[8])
+
+X1 = f64_array([0, 0, 1, 1])
+X2 = f64_array([0, 1, 0, 1])
+Y = f64_array([0, 1, 1, 0])
+TX1 = f64_array([0.1, 0.1, 0.9, 0.9])
+TX2 = f64_array([0.1, 0.9, 0.1, 0.9])
+TY = f64_array([0, 1, 1, 0])
+indices = [0, 1, 2, 3]
+pesos = f64_array([0.12, -0.18, 0.04, -0.22, 0.16, -0.03, 0.21, -0.17, 0.08])
+taxa = 0.7
+epocas = 3000
+
+@ O treino e sequencial: cada exemplo atualiza os pesos usados pelo proximo.
+inicio = agora_ns()
+for epoca in range(epocas)
+    for i in indices
+        x1 = X1[i]
+        x2 = X2[i]
+        alvo = Y[i]
+        z1 = pesos[0] * x1 + pesos[1] * x2 + pesos[2]
+        z2 = pesos[3] * x1 + pesos[4] * x2 + pesos[5]
+        h1 = sigmoid(z1)
+        h2 = sigmoid(z2)
+        saida = sigmoid(pesos[6] * h1 + pesos[7] * h2 + pesos[8])
+        delta_saida = (alvo - saida) * saida * (1 - saida)
+        delta_h1 = h1 * (1 - h1) * pesos[6] * delta_saida
+        delta_h2 = h2 * (1 - h2) * pesos[7] * delta_saida
+        array_set(pesos, 6, pesos[6] + taxa * delta_saida * h1)
+        array_set(pesos, 7, pesos[7] + taxa * delta_saida * h2)
+        array_set(pesos, 8, pesos[8] + taxa * delta_saida)
+        array_set(pesos, 0, pesos[0] + taxa * delta_h1 * x1)
+        array_set(pesos, 1, pesos[1] + taxa * delta_h1 * x2)
+        array_set(pesos, 2, pesos[2] + taxa * delta_h1)
+        array_set(pesos, 3, pesos[3] + taxa * delta_h2 * x1)
+        array_set(pesos, 4, pesos[4] + taxa * delta_h2 * x2)
+        array_set(pesos, 5, pesos[5] + taxa * delta_h2)
+fim = agora_ns()
+print("treino_ms", (fim - inicio) / 1000000)
+print("epocas", epocas)
+
+@ |> : executa a inferencia em sequencia, item por item.
+inicio_seq = agora_ns()
+indices |> i |> print("previsao_sequencial", i, prever(TX1[i], TX2[i]))
+fim_seq = agora_ns()
+print("inferencia_sequencial_ms", (fim_seq - inicio_seq) / 1000000)
+
+@ >| : cada previsao pode ser calculada por um worker, pois os pesos nao mudam.
+@ |< coleta os resultados preservando a ordem dos indices.
+inicio_par = agora_ns()
+indices >| i >| prever(TX1[i], TX2[i]) |< previsoes_par
+fim_par = agora_ns()
+print("previsoes_paralelas", previsoes_par)
+print("inferencia_paralela_ms", (fim_par - inicio_par) / 1000000)
+
+acertos = 0
+for i in indices
+    p = previsoes_par[i]
+    print("teste", i, "alvo", TY[i], "probabilidade", p)
+    if (p >= 0.5 and TY[i] == 1) or (p < 0.5 and TY[i] == 0)
+        acertos = acertos + 1
+print("acuracia_teste_pct", acertos * 25)
+
+@ <| e uma barreira: a proxima instrucao so roda apos terminar todas as tarefas.
+indices >| i >| print("worker terminou indice", i) <| print("barreira: todas as tarefas terminaram")

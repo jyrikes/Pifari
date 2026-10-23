@@ -1,0 +1,83 @@
+CC := gcc
+FLEX := flex
+BISON := bison
+CFLAGS := -std=c11 -O3 -flto -march=native -Wall -Wextra -Wpedantic -Ifrontend -Ibackend
+.PHONY: all clean test test-fuzz benchmark
+all: pifari
+parser.tab.c parser.tab.h &: frontend/parser.y frontend/ast.h backend/runtime.h
+	$(BISON) -Wall -d -o parser.tab.c frontend/parser.y
+lex.yy.c: frontend/lexer.l parser.tab.h
+	$(FLEX) -o lex.yy.c frontend/lexer.l
+frontend/parser.o: parser.tab.c frontend/ast.h backend/runtime.h
+	$(CC) $(CFLAGS) -pthread -c parser.tab.c -o $@
+frontend/lexer.o: lex.yy.c frontend/ast.h
+	$(CC) $(CFLAGS) -pthread -c lex.yy.c -o $@
+backend/runtime.o: backend/runtime.c backend/runtime.h backend/operator_engine.h backend/ast_ir.h backend/numeric_buffer.h backend/native_kernel.h frontend/ast.h
+	$(CC) $(CFLAGS) -pthread -c backend/runtime.c -o $@
+backend/optimizer.o: backend/optimizer.c backend/optimizer.h
+	$(CC) $(CFLAGS) -c $< -o $@
+backend/ast_ir.o: backend/ast_ir.c backend/ast_ir.h backend/optimizer.h frontend/ast.h
+	$(CC) $(CFLAGS) -c $< -o $@
+backend/numeric_buffer.o: backend/numeric_buffer.c backend/numeric_buffer.h
+	$(CC) $(CFLAGS) -c $< -o $@
+backend/dirac.o: backend/dirac.c backend/dirac.h
+	$(CC) $(CFLAGS) -c $< -o $@
+backend/native_kernel.o: backend/native_kernel.c backend/native_kernel.h backend/optimizer.h
+	$(CC) $(CFLAGS) -pthread -c $< -o $@
+backend/operator_engine.o: backend/operator_engine.c backend/operator_engine.h
+	$(CC) $(CFLAGS) -pthread -c $< -o $@
+backend/memory_plan.o: backend/memory_plan.c backend/memory_plan.h
+	$(CC) $(CFLAGS) -c $< -o $@
+backend/reversible.o: backend/reversible.c backend/reversible.h
+	$(CC) $(CFLAGS) -c $< -o $@
+pifari: frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o
+	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm -ldl
+test_optimizer: tests/test_optimizer.c backend/optimizer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o
+	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm
+test_ast_ir: tests/test_ast_ir.c backend/ast_ir.o backend/optimizer.o backend/numeric_buffer.o
+	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm
+test_dirac: tests/test_dirac.c backend/dirac.o
+	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm
+test_native_kernel: tests/test_native_kernel.c backend/native_kernel.o backend/optimizer.o
+	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm -ldl
+test: pifari test_optimizer test_ast_ir test_dirac test_native_kernel
+	./test_optimizer
+	./test_ast_ir
+	./test_dirac
+	./test_native_kernel
+	./pifari examples/runtime_map_fused.pif
+	./pifari examples/runtime_fusion.pif
+	./pifari examples/runtime_numeric_tools.pif
+	./pifari examples/teste_range_preguicoso.pif
+	./pifari examples/runtime_lista.pif
+	./pifari examples/runtime_operadores.pif
+	./pifari examples/runtime_vm.pif
+	./pifari examples/runtime_vm_index_compare.pif
+	./pifari examples/runtime_fused_chain.pif
+	./pifari examples/typed_arrays.pif
+	./pifari examples/runtime_indexed_native.pif
+	./pifari examples/runtime_matriz.pif
+	./pifari examples/runtime_matmul.pif
+	./pifari examples/runtime_otimizacoes.pif
+	./pifari examples/runtime_slots_pool.pif
+	./pifari examples/runtime_fluxo.pif
+	./pifari examples/fluxo_sequencial.pif
+	./pifari examples/fluxo_paralelo.pif
+	./pifari examples/fluxo_coleta.pif
+	./pifari examples/fluxo_sincronizacao.pif
+	./pifari examples/funcoes.pif
+	./pifari examples/nova_sintaxe_fluxo.pif
+	./pifari examples/paralelismo_assincrono.pif
+	./pifari examples/mlp_xor.pif
+	./pifari examples/mlp_xor_fluxo.pif
+test-fuzz: pifari
+	python3 tests/fuzz_parser.py
+benchmark: pifari
+	python3 examples/benchmark_cpu.py
+	python3 examples/benchmark_matrizes.py
+	./pifari examples/benchmark_fused_chain.pif
+	python3 examples/benchmark_indexed_vs_python.py
+	python3 examples/benchmark_mlp_xor.py
+	./pifari examples/carga_fluxo_puro.pif
+clean:
+	rm -f pifari test_optimizer test_ast_ir test_dirac test_native_kernel parser.tab.c parser.tab.h lex.yy.c parser.output frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o

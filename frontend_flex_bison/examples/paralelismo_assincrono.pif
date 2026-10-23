@@ -1,0 +1,26 @@
+@ Teste real de paralelismo: sleep_ms, agora_ms e thread_id
+@ Cada tarefa espera 500 ms. O fluxo sequencial deve levar ~4000 ms;
+@ com quatro workers, o fluxo paralelo deve levar ~1000 ms.
+
+numeros = [1, 2, 3, 4, 5, 6, 7, 8]
+
+trabalho : (n) {
+    print("INICIO tarefa", n, "thread", thread_id(), "ms", agora_ms())
+    sleep_ms(500)
+    print("FIM tarefa", n, "thread", thread_id(), "ms", agora_ms())
+    n * 2
+}
+
+print("=== SEQUENCIAL ===")
+inicio_seq = agora_ms()
+for n in numeros
+    trabalho(n)
+tempo_seq = agora_ms() - inicio_seq
+print("Tempo sequencial (ms):", tempo_seq)
+
+print("=== PARALELO (pool de 4 workers) ===")
+inicio_par = agora_ms()
+numeros >| n >| trabalho(n) |< resultados
+tempo_par = agora_ms() - inicio_par
+print("Resultados:", resultados)
+print("Tempo paralelo (ms):", tempo_par)

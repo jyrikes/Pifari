@@ -1,0 +1,11 @@
+a = 20
+b = 6
+print(a + b)
+print(a - b)
+print(a * b)
+print(a / b)
+print(a // b)
+print(a % b)
+print(2 ** 3)
+print(-a + b)
+print((a + b) * 2)

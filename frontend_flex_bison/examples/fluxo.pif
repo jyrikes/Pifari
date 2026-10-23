@@ -1,0 +1,6 @@
+@ Exemplo de operadores de fluxo
+numeros = [1, 2, 3, 4]
+numeros |> numero |> print(numero)
+resultado = dados >| processar
+agregados = tarefas |< coletar
+entrada = funcao <| valor

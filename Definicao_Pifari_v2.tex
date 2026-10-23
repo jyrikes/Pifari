@@ -1,0 +1,409 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{lmodern}
+\usepackage{geometry}
+\geometry{left=3cm,right=2cm,top=3cm,bottom=2cm}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\usepackage{array}
+\setlength{\parindent}{1.25cm}
+\setlength{\parskip}{0.25em}
+\setlist{itemsep=0.2em,topsep=0.3em}
+\definecolor{codebg}{RGB}{247,247,247}
+\definecolor{codecomment}{RGB}{35,110,65}
+\definecolor{codekeyword}{RGB}{35,65,145}
+\lstdefinelanguage{Pifari}{
+  morekeywords={true,false,null,None,Int,Float,Bool,Text,List,Map,Set,if,else,elseif,for,while,break,continue,return,import,const,await,async,agent,match},
+  sensitive=true,
+  morecomment=[s]{@}{@},
+  morestring=[b]",
+  morestring=[b]',
+  alsoletter={|:}
+}
+\lstset{
+  language=Pifari,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{codekeyword}\bfseries,
+  commentstyle=\color{codecomment}\itshape,
+  stringstyle=\color{red!60!black},
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{black!20},
+  breaklines=true,
+  showstringspaces=false,
+  keepspaces=true,
+  columns=fullflexible,
+  inputencoding=utf8,
+  extendedchars=true
+}
+\title{\textbf{Definição da Linguagem de Programação Pifari}\\
+\large Especificação consolidada -- versão de trabalho}
+\author{Documento de projeto}
+\date{Outubro de 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+Este documento consolida a proposta da linguagem de programação Pifari, de extensão \texttt{.pif}, com foco em sintaxe concisa, controle de fluxo orientado a valores, composição de operações, programação concorrente e assíncrona e interoperabilidade com C, C++, .NET e Python. A especificação incorpora a ideia de iniciar condicionais diretamente por expressões booleanas e iterações por valores iteráveis, sem exigir sempre as palavras-chave convencionais \texttt{if} e \texttt{for}. O texto define regras lexicais, sintáticas e semânticas propostas, exemplos, diagnósticos e pontos que ainda dependem de prototipação. A Pifari permanece uma linguagem em desenvolvimento; este documento especifica o comportamento pretendido, não afirma a existência de uma implementação completa.
+\end{abstract}
+\tableofcontents
+\newpage
+
+\section{Identidade, propósito e princípios}
+\subsection{Identidade}
+O nome da linguagem é \textbf{Pifari}, sua extensão é \texttt{.pif} e sua inspiração nominal vem do pífano e da tradição musical nordestina. A metáfora do projeto é a coordenação de diferentes tarefas que executam partes independentes de uma composição.
+
+\subsection{Propósito}
+A Pifari é concebida como uma linguagem interpretada, concorrente, assíncrona e de propósito geral. Seu objetivo é simplificar a coordenação de tarefas, a composição de operações e a criação de sistemas com agentes, mantendo interoperabilidade nativa com ecossistemas existentes. O runtime deverá cuidar do escalonamento de tarefas e do uso de um conjunto de threads, sem confundir concorrência com paralelismo: tarefas concorrentes podem progredir intercaladamente, enquanto tarefas paralelas executam efetivamente ao mesmo tempo quando houver recursos e independência suficientes.
+
+\subsection{Princípios de projeto}
+\begin{itemize}
+\item expressões e valores devem ser capazes de iniciar construções de controle quando seu tipo e contexto forem compatíveis;
+\item a sintaxe deve favorecer leitura da esquerda para a direita e composição com \texttt{|>};
+\item a indentação define os blocos e deve ser consistente;
+\item o sistema de tipos combina inferência, declarações explícitas e verificações em tempo de execução;
+\item valores compartilhados, mensagens, tarefas assíncronas e agentes são mecanismos de primeira classe;
+\item conversões entre tipos distintos devem ser explícitas, salvo conversões seguras formalmente definidas;
+\item falhas de tarefas devem ser isoladas e diagnosticáveis;
+\item interoperabilidade não deve esconder os custos e as regras de propriedade entre runtimes.
+\end{itemize}
+
+\section{Modelo de execução}
+O programa-fonte é um arquivo UTF-8 com extensão \texttt{.pif}. A implementação de referência será um interpretador. O processamento conceitual compreende leitura do arquivo, análise léxica, análise sintática, análise semântica e de tipos, preparação de vínculos externos e execução pelo runtime. A implementação poderá armazenar uma representação intermediária, mas isso não altera a semântica definida pela linguagem.
+
+O runtime gerenciará um pool de threads e um escalonador de tarefas. A existência de uma operação assíncrona não implica que ela seja executada em paralelo em todos os casos. Dependências de dados, efeitos colaterais, recursos compartilhados e limites do ambiente deverão ser considerados. A execução de código externo poderá ocorrer no mesmo processo ou em processo separado, conforme o mecanismo de interoperabilidade escolhido.
+
+\section{Regras lexicais}
+\subsection{Codificação e identificadores}
+O código-fonte usa UTF-8. Identificadores começam por letra ou sublinhado e podem conter letras, números e sublinhados. A linguagem diferencia maiúsculas de minúsculas. Para favorecer interoperabilidade, recomenda-se utilizar identificadores ASCII sem acentos na primeira versão, embora textos e comentários possam conter caracteres Unicode.
+
+Exemplos de identificadores válidos: \texttt{idade}, \texttt{\_total}, \texttt{nota2}, \texttt{calcular\_media}. Identificadores não podem começar por número nem conter espaços ou hífens.
+
+\subsection{Literais}
+Os literais previstos são:
+\begin{itemize}
+\item inteiros, como \texttt{20} e \texttt{-3};
+\item reais, como \texttt{3.14} e \texttt{-0.5};
+\item booleanos, \texttt{true} e \texttt{false};
+\item textos delimitados por aspas simples ou duplas, além da forma nativa sem aspas em txt(...);
+\item listas, mapas e conjuntos, conforme as regras de construção de coleções;
+\item valor nulo, escrito \texttt{null}; na fronteira com Python, o valor correspondente é \texttt{None}.
+\end{itemize}
+A gramática deverá definir escapes de texto, notação científica e a forma exata dos literais de mapas e conjuntos. Aspas simples e duplas são aceitas para preservar familiaridade sintática com C e Python, sem implicar compatibilidade integral entre as linguagens. A forma nativa txt(conteúdo sem aspas) também é aceita; nesse formato, o conteúdo é tratado como texto literal até o parêntese de fechamento correspondente, conforme as regras de balanceamento e escape.
+
+\subsection{Comentários}
+Todo comentário começa com o delimitador \texttt{@} e termina no próximo \texttt{@}. A mesma regra vale para comentários de uma linha e multilinha: o comentário pode ocupar parte de uma linha ou atravessar várias linhas, mas sempre precisa ser fechado por \texttt{@}. Não são necessários aspas nem marcadores especiais para comentários multilinha. Comentários não são aninhados na versão inicial; a ausência do delimitador final deve produzir erro léxico.
+
+\begin{lstlisting}
+@ Comentario de linha @
+idade = 20
+
+@ Comentario que atravessa varias linhas.
+Pode documentar uma decisao ou um trecho de codigo. @
+nome = "Ana"
+nome_sem_aspas =: txt(Ana)
+\end{lstlisting}
+
+\subsection{Indentação e blocos}
+A indentação é obrigatória para delimitar blocos. O arquivo pode usar espaços ou tabulações, mas um mesmo bloco não pode misturar os dois estilos. A implementação deverá sinalizar indentação inconsistente em vez de tentar adivinhar a estrutura. Quebras de linha separam instruções simples, exceto quando a gramática indicar continuação de expressão. Chaves não são necessárias para delimitar os blocos ordinários da linguagem.
+
+\section{Variáveis, declarações e escopo}
+\subsection{Declaração dinâmica e tipada}
+A atribuição simples com \texttt{=} cria ou atualiza uma variável dinâmica, cujo tipo pode mudar de acordo com as regras de execução. A forma \texttt{nome =: tipo(valor)} declara uma variável com tipo explícito, cuja identidade de tipo não pode mudar depois da declaração. O valor inicial deve ser compatível com o tipo declarado. Os construtores tipados são escritos em minúsculas, como \texttt{int(...)}, \texttt{float(...)}, \texttt{bool(...)} e \texttt{txt(...)}; os nomes dos tipos abstratos são documentados como Int, Float, Bool e Text.
+
+A construção \texttt{txt(conteúdo)} aceita texto sem aspas. Quando o conteúdo estiver entre aspas simples ou duplas, essas aspas delimitam um literal convencional. A forma sem aspas trata o conteúdo como texto literal, não como nome de variável ou expressão; para converter uma variável em texto, deve-se usar uma operação de conversão explicitamente definida. Aspas simples e duplas também podem ser usadas em literais textuais fora de \texttt{txt(...)}.
+
+\begin{lstlisting}
+idade = 10
+idade = "dez"       @ Permitido para variavel dinamica @
+
+pontos =: int(20)
+pontos = 21          @ Continua sendo inteiro se a atribuicao for compativel @
+@ pontos = "vinte" Erro de tipo: a variavel tipada nao muda de tipo @
+
+nome =: txt(Maria)
+saudacao =: txt(Ola, mundo!)
+nome_python =: txt("Ana")
+nome_c =: txt('Ana')
+\end{lstlisting}
+
+O símbolo \texttt{:=} continua iniciando uma declaração de classe, conforme a Seção 10. O operador \texttt{=:} introduz declarações tipadas de variáveis e também a seção de membros de uma classe, conforme o contexto sintático. A gramática deverá tornar essa distinção determinística; a implementação não pode depender de uma interpretação arbitrária.
+
+\subsection{Constantes e escopo}
+A forma \texttt{const} poderá marcar uma referência que não recebe novas atribuições. Cada variável pertence ao escopo do bloco, função, agente ou módulo em que foi declarada. O uso de identificador inexistente deve gerar diagnóstico. Regras de sombreamento de nomes deverão ser explícitas; a proposta inicial proíbe duplicação no mesmo escopo.
+
+\section{Sistema de tipos}
+\subsection{Tipos fundamentais}
+\begin{center}
+\begin{tabular}{>{\ttfamily}p{3cm}p{10cm}}
+\textnormal{\textbf{Tipo}} & \textnormal{\textbf{Significado}}\\
+\hline
+Int & Inteiro de precisão definida pela implementação, com interoperabilidade prevista com inteiros C compatíveis.\\
+Float & Número real de ponto flutuante.\\
+Bool & Valor lógico \texttt{true} ou \texttt{false}.\\
+Text & Sequência de caracteres Unicode.\\
+List[T] & Coleção ordenada de valores do tipo T.\\
+Map[K,V] & Associação entre chaves K e valores V.\\
+Set[T] & Coleção de valores únicos.\\
+Null & Ausência intencional de valor, escrita \texttt{null}.\\
+\end{tabular}
+\end{center}
+
+Também poderão existir tipos de função, tarefa, agente, objeto, módulo e tipos definidos pelo programador. Os tipos primitivos deverão oferecer mapeamentos explícitos e documentados para tipos C equivalentes, sem presumir que todas as plataformas usem a mesma largura numérica.
+
+\subsection{Inferência, verificações e conversões}
+A Pifari adota um sistema híbrido: o analisador infere tipos e detecta incompatibilidades sempre que possível, e o runtime verifica operações que dependam de valores dinâmicos. Uma variável dinâmica pode receber valores de tipos diferentes; uma variável declarada com tipo explícito não pode mudar de tipo.
+
+Conversões entre tipos distintos devem ser explícitas, por meio de construtores ou funções de conversão, exceto conversões seguras que venham a ser especificadas formalmente. Não deve haver conversão implícita arbitrária de texto para número, nem de qualquer objeto para booleano. Uma condição exige um valor de tipo \texttt{Bool}. Um valor nulo não é equivalente a \texttt{false}; sua semântica é distinta.
+
+\section{Expressões e operadores}
+Os operadores aritméticos previstos são \texttt{+}, \texttt{-}, \texttt{*}, \texttt{/}, \texttt{//}, \texttt{\%} e \texttt{**}. Os relacionais são \texttt{==}, \texttt{!=}, \texttt{<}, \texttt{<=}, \texttt{>} e \texttt{>=}. Os operadores lógicos são \texttt{and}, \texttt{or} e \texttt{not}. O operador \texttt{=} representa atribuição. O operador \texttt{|>} representa composição e, em contextos iteráveis específicos, encadeamento de iteração.
+
+A precedência exata será fixada na gramática formal. Como princípio, chamadas e agrupamentos têm precedência alta; operações aritméticas precedem comparações; comparações precedem operadores lógicos; e a composição por \texttt{|>} associa-se da esquerda para a direita, exceto nos contextos de iteração descritos adiante. Parênteses podem explicitar a ordem de avaliação.
+
+\begin{lstlisting}
+resultado_a = 2 + 3 * 4
+resultado_b = (2 + 3) * 4
+dobro = 5 ** 2
+\end{lstlisting}
+
+\section{Controle de fluxo orientado a valores}
+\subsection{Princípio geral}
+Uma expressão pode iniciar uma construção de controle quando seu tipo determina inequivocamente a intenção. Se a expressão resultar em \texttt{Bool}, ela pode iniciar um bloco condicional. Se resultar em um valor iterável, pode iniciar uma iteração por meio do pipeline. Portanto, não é obrigatório escrever \texttt{if} ou \texttt{for} em todas as construções. Essa regra não transforma identificadores como \texttt{test} em palavras reservadas: são expressões comuns interpretadas conforme o valor e o contexto.
+
+\subsection{Condicional iniciado por booleano}
+A forma básica é uma expressão booleana seguida de um bloco indentado. O bloco é executado quando a expressão resulta em \texttt{true}. A cláusula \texttt{elseif} introduz uma nova condição, avaliada apenas se as condições anteriores forem falsas. A cláusula \texttt{else} fornece o caminho alternativo quando nenhuma condição anterior for satisfeita.
+
+\begin{lstlisting}
+test = true
+
+test
+    print("ola")
+elseif outra_condicao
+    print("outra condicao verdadeira")
+else
+    print("nenhuma condicao satisfeita")
+\end{lstlisting}
+
+O exemplo ilustra a forma pretendida; \texttt{outra\_condicao} é um identificador ilustrativo e precisa estar definido como \texttt{Bool}. As condições são avaliadas em ordem, uma única vez cada, até que uma seja verdadeira. Apenas o bloco selecionado é executado. Um valor não booleano não pode ser usado silenciosamente como condição.
+
+A forma explícita convencional \texttt{if condição} poderá ser aceita como alternativa de legibilidade, mas a forma direta por expressão é parte central da proposta. Parênteses não são obrigatórios ao redor da condição. A indentação determina o corpo e a associação de \texttt{elseif} e \texttt{else} ao condicional mais próximo que ainda aceite essas cláusulas.
+
+\subsection{Condicionais como expressões}
+Uma construção condicional pode produzir um valor quando todos os caminhos relevantes resultam em valores compatíveis. O operador \texttt{|>} não deve ser presumido como retorno apenas por aparecer no bloco alternativo: seu significado é definido pelo contexto sintático. A forma exata de escrever um resultado condicional será validada por protótipo para evitar confusão entre bloco de controle e composição de operações.
+
+\begin{lstlisting}
+nota = 8
+nota >= 7
+    print("Aprovado")
+else
+    print("Reprovado")
+\end{lstlisting}
+
+\subsection{Laços convencionais}
+A Pifari pode oferecer \texttt{while} para repetição condicionada e uma forma explícita de \texttt{for} como alternativa legível. \texttt{break} interrompe a repetição atual e \texttt{continue} avança para a próxima iteração. Essas palavras não substituem a forma de iteração por pipeline; oferecem uma alternativa para algoritmos em que o fluxo explícito é mais claro.
+
+\section{Iteração por valores iteráveis e operador \texttt{|>}}
+\subsection{Iteração concisa}
+Quando uma expressão produz um valor que implementa a capacidade \textit{Iterable}, ela pode iniciar uma iteração. Na forma concisa, o primeiro \texttt{|>} associa o elemento atual a um identificador e o próximo \texttt{|>} encadeia uma operação aplicada a cada elemento. Assim, a coleção, a variável de iteração e a ação podem ser lidas da esquerda para a direita.
+
+\begin{lstlisting}
+numeros = [1, 2, 3]
+
+numeros
+    |> numero
+    |> print()
+\end{lstlisting}
+
+A semântica pretendida é equivalente a percorrer os elementos de \texttt{numeros}, vincular cada elemento a \texttt{numero} e executar \texttt{print(numero)} uma vez por elemento. A variável de iteração tem escopo limitado ao corpo da iteração. A ordem de visita preserva a ordem definida pelo iterável; coleções sem ordem garantida não passam a ter ordem garantida apenas por serem usadas com \texttt{|>}.
+
+\subsection{Regras semânticas da iteração}
+\begin{itemize}
+\item a expressão inicial deve produzir um iterável;
+\item o identificador depois do primeiro \texttt{|>} nomeia o elemento atual;
+\item operações posteriores do pipeline são avaliadas para cada elemento, salvo se uma operação estiver explicitamente definida como agregadora;
+\item a variável de iteração não pode ser lida fora de seu escopo;
+\item erros em uma operação devem apontar o elemento e a etapa do pipeline quando essas informações estiverem disponíveis;
+\item paralelizar a iteração é uma decisão do runtime, permitida apenas quando a semântica e os efeitos colaterais não forem violados.
+\end{itemize}
+
+\subsection{Composição funcional geral}
+Fora do contexto de iteração concisa, \texttt{|>} encaminha o resultado da expressão à operação seguinte. As operações de coleção incluem transformações, filtragem e agregação. Lambdas usam \texttt{->}; esse operador é reservado para expressões lambda e não é um operador geral de retorno.
+
+\begin{lstlisting}
+numeros = [1, 2, 3, 4, 5]
+dobrados = numeros |> map(x -> x * 2)
+pares = numeros |> filter(x -> x % 2 == 0)
+soma = numeros |> reduce((acum, x) -> acum + x, 0)
+\end{lstlisting}
+
+A gramática deverá distinguir a composição funcional comum da forma de iteração por elemento. Se uma sequência de tokens puder ser interpretada de ambas as maneiras, a especificação final deverá priorizar uma regra determinística ou exigir parênteses/uma forma explícita. O compilador não deve decidir com base em heurísticas não documentadas.
+
+\section{Funções, lambdas e módulos}
+Funções aceitam parâmetros e podem produzir valores. A forma final de declaração de função será definida na gramática. O operador \texttt{->} é usado somente para lambdas.
+
+\begin{lstlisting}
+dobrar = x -> x * 2
+resultado = dobrar(5)
+
+import matematica
+\end{lstlisting}
+
+O sistema de módulos utiliza \texttt{import} para importar módulos Pifari e módulos Python. A interoperabilidade Python deverá permitir tanto integração embutida no processo quanto comunicação com um processo Python separado. A escolha do modo de integração deve ser explícita ou seguir configuração documentada, pois os modelos têm custos e limites distintos.
+
+\section{Classes, atributos e métodos}
+A declaração de classe usa \texttt{:=} para iniciar a classe e \texttt{=:} para introduzir a seção de membros. Esses operadores possuem papéis diferentes e não são intercambiáveis. Atributos e métodos são privados por padrão; a forma de declarar membros públicos deverá ser especificada de maneira explícita.
+
+\begin{lstlisting}
+Pessoa :=
+    =:
+        nome =: txt(Ana)
+        idade =: int(20)
+
+        apresentar = () ->
+            print(nome)
+\end{lstlisting}
+
+O trecho é esquemático e registra a distinção entre o início da classe e a seção de membros; a gramática definitiva ainda deve fixar a forma de declarar métodos, parâmetros, construtores e visibilidade. A resolução de nomes de membros, herança, interfaces e despacho dinâmico também deverá ser formalizada antes da implementação estável.
+
+\section{Importação, bibliotecas nativas e interoperabilidade}
+\subsection{\texttt{import}}
+A palavra-chave \texttt{import} importa módulos Pifari e módulos Python. O sistema deverá definir resolução de nomes, caminhos de módulos, cache, inicialização e tratamento de falhas de importação.
+
+\subsection{\texttt{\#include} e bibliotecas nativas}
+A diretiva \texttt{\#include} destina-se à inclusão de declarações e interfaces nativas compatíveis, especialmente cabeçalhos C/C++. Ela não deve ser confundida com o sistema de módulos Python. Como C, C++ e C\# têm modelos de compilação e interoperabilidade distintos, o interpretador deverá encaminhar cada tipo de integração para o mecanismo correto, em vez de tratar todos como cabeçalhos equivalentes.
+
+\subsection{\texttt{Link to}}
+\texttt{Link to} seleciona ou vincula bibliotecas e símbolos externos definidos pelo sistema operacional ou pela Pifari. Pode receber nomes lógicos de bibliotecas ou caminhos de arquivos. A ligação de bibliotecas C deve ocorrer antes da execução do programa, de modo que símbolos ausentes ou incompatíveis sejam detectados antes de iniciar as tarefas que dependem deles.
+
+\subsection{Fronteiras entre runtimes}
+Valores entre Pifari, Python, C/C++ e .NET serão convertidos por padrão quando houver conversão segura e definida. Compartilhamento direto de memória entre runtimes deve ser explícito, pois envolve propriedade, ciclo de vida, representação e sincronização. Exceções, erros e recursos liberados por um runtime devem ser traduzidos ou encapsulados sem ocultar sua origem.
+
+\section{Concorrência, assincronia e tarefas}
+Concorrência e paralelismo são conceitos distintos. Uma operação assíncrona cria uma tarefa que precisa ser iniciada pelo mecanismo definido pela linguagem. \texttt{await} aguarda a conclusão de uma tarefa e só pode ser usado em contextos permitidos. O runtime administra o escalonamento e pode executar tarefas independentes em threads diferentes.
+
+Falhas de uma tarefa devem ser isoladas daquela tarefa e comunicadas ao consumidor ou supervisor conforme a política de erros. O cancelamento é cooperativo e ocorre em pontos seguros. O runtime não deve interromper arbitrariamente uma operação nativa que não suporte cancelamento seguro.
+
+\section{Agentes e comunicação}
+Agentes são unidades de execução com estado próprio, tarefas e capacidade de trocar mensagens. Mensagens e memória compartilhada são mecanismos de primeira classe, com regras distintas. A comunicação por mensagens favorece isolamento; memória compartilhada pode ser usada quando a aplicação precisar de acesso coordenado a estado comum. O runtime deverá proteger automaticamente o acesso compartilhado conforme o modelo híbrido adotado, sem prometer ausência de bloqueios ou custo zero.
+
+A criação, inicialização, encerramento, supervisão, política de falhas e endereçamento de agentes deverão ser formalizados em uma seção de runtime da implementação. Nenhum agente deve permanecer executando silenciosamente após o encerramento do programa.
+
+\section{Memória e recursos}
+A gestão de memória é automática por padrão. Controles explícitos de baixo nível poderão existir para casos que necessitem de interoperabilidade ou desempenho, sujeitos a regras de segurança e propriedade. Objetos compartilhados entre tarefas exigem sincronização definida pelo runtime. Recursos externos, como arquivos, sockets, referências nativas e objetos Python, devem ter regras claras de liberação.
+
+O encerramento do programa aguarda as tarefas e os agentes que, segundo a política de ciclo de vida, devam concluir ou terminar. A política para tarefas destacadas, cancelamento no encerramento e falhas não tratadas deve ser determinística e documentada.
+
+\section{Regras semânticas e diagnósticos}
+O interpretador deverá distinguir erros léxicos, sintáticos, semânticos, de tipo e de execução. Mensagens devem indicar categoria, linha e coluna quando disponíveis, identificador ou expressão envolvida e uma explicação acionável.
+
+\begin{itemize}
+\item identificador não declarado: erro semântico;
+\item expressão não booleana iniciando condicional: erro de tipo;
+\item expressão não iterável iniciando iteração: erro de tipo;
+\item uso de \texttt{elseif} ou \texttt{else} sem condicional compatível: erro sintático ou semântico;
+\item mistura de tabulações e espaços na indentação do mesmo bloco: erro de indentação;
+\item símbolo nativo não encontrado: erro de ligação anterior à execução;
+\item conversão inválida: erro de conversão explícito;
+\item falha de tarefa: erro associado à tarefa, propagado conforme a política de supervisão.
+\end{itemize}
+
+\section{Gramática preliminar}
+A gramática abaixo é esquemática e registra os principais princípios. A gramática normativa deverá resolver a associação entre quebras de linha, indentação, blocos, pipeline funcional e pipeline iterável. Comentários de qualquer extensão seguem a regra única \texttt{@ ... @}.
+
+\begin{lstlisting}
+programa       := { instrucao }
+instrucao      := atribuicao | expressao | condicional
+                | iteracao | funcao | importacao
+atribuicao     := IDENT "=" expressao
+                | IDENT \"=:\" tipo \"(\" expressao \")\"
+condicional    := expressao_bool BLOCO
+                  { "elseif" expressao_bool BLOCO }
+                  [ "else" BLOCO ]
+iteracao       := expressao_iteravel "|>" IDENT
+                  "|>" operacao
+lambda         := parametros "->" expressao
+importacao     := "import" IDENT
+BLOCO          := NOVA_LINHA INDENT { instrucao } DEDENT
+\end{lstlisting}
+
+Essa gramática não é ainda uma EBNF completa: \texttt{expressao\_bool}, \texttt{expressao\_iteravel}, \texttt{operacao}, tipos, parâmetros e regras de indentação precisam ser definidos formalmente. A gramática final deverá refletir a distinção entre atribuição dinâmica com \texttt{=} e declaração tipada com \texttt{=:}, bem como a declaração de classe iniciada por \texttt{:=}.
+
+\section{Exemplos integrados}
+\subsection{Condição direta}
+\begin{lstlisting}
+ativo = true
+
+ativo
+    print("Sistema ativo")
+else
+    print("Sistema inativo")
+\end{lstlisting}
+
+\subsection{Iteração por pipeline}
+\begin{lstlisting}
+numeros = [1, 2, 3]
+
+numeros
+    |> numero
+    |> print()
+\end{lstlisting}
+
+\subsection{Transformação e filtragem}
+\begin{lstlisting}
+numeros = [1, 2, 3, 4, 5]
+dobrados = numeros |> map(x -> x * 2)
+pares = numeros |> filter(x -> x % 2 == 0)
+print(pares)
+\end{lstlisting}
+
+\subsection{Entrada, conversão e saída}
+\begin{lstlisting}
+texto = input("Digite sua idade: ")
+idade = Int(texto)
+print("Idade informada: ", idade)
+\end{lstlisting}
+
+Os exemplos são ilustrativos da proposta. A forma exata de chamadas, entrada/saída, visibilidade de membros, retorno de expressões condicionais e sintaxe de tarefas será confirmada por testes de parser e protótipos do runtime.
+
+\section{Testes de conformidade iniciais}
+A implementação deverá incluir testes que verifiquem ao menos:
+\begin{enumerate}
+\item booleano verdadeiro executa o primeiro bloco e booleano falso seleciona alternativa;
+\item \texttt{elseif} avalia condições na ordem e \texttt{else} só é executado quando nenhuma condição é verdadeira;
+\item valor numérico, texto ou nulo não é aceito como condição sem conversão explícita para \texttt{Bool};
+\item iterável percorre os elementos conforme a ordem garantida pela coleção;
+\item o primeiro estágio de iteração vincula o elemento ao identificador declarado;
+\item a operação seguinte do pipeline é aplicada uma vez por elemento;
+\item valor não iterável não pode iniciar iteração;
+\item blocos com indentação inconsistente são rejeitados com diagnóstico;
+\item variável tipada declarada com \texttt{=:} não muda de tipo, enquanto variável dinâmica segue as regras dinâmicas;
+\item símbolos nativos ausentes são reportados antes da execução;
+\item falha em uma tarefa não corrompe o estado de tarefas independentes;
+\item cancelamento cooperativo e encerramento de agentes obedecem à política do runtime.
+\end{enumerate}
+
+\section{Decisões pendentes e critérios de estabilidade}
+Esta especificação fixa a direção desejada, mas algumas decisões precisam de protótipos antes de serem consideradas estáveis:
+\begin{itemize}
+\item gramática completa para expressões que iniciam blocos e associação de \texttt{elseif}/\texttt{else};
+\item distinção normativa entre pipeline funcional e pipeline de iteração;
+\item sintaxe completa de classes, membros, visibilidade, métodos e construtores;
+\item representação e largura dos tipos numéricos e seus mapeamentos para C;
+\item modelo exato de importação Python embutida e por processo separado;
+\item formato das declarações externas e resolução de símbolos de C/C++ e .NET;
+\item sintaxe de criação, inicialização e supervisão de agentes;
+\item regras finais de compartilhamento de memória, cancelamento e encerramento;
+\item forma final de retorno de valores por blocos condicionais.
+\end{itemize}
+
+Uma regra será considerada estável quando possuir gramática não ambígua, semântica documentada, mensagens de erro definidas, testes de conformidade e implementação de referência consistente. A especificação deve distinguir claramente recursos normativos, recursos experimentais e ideias futuras.
+
+\section{Conclusão}
+A Pifari propõe uma linguagem em que valores e capacidades orientam a forma de controle: booleanos podem iniciar condicionais, iteráveis podem iniciar iterações por pipeline, e operações podem ser compostas da esquerda para a direita. A proposta combina essa sintaxe com inferência de tipos, verificações em tempo de execução, concorrência gerenciada, agentes, memória compartilhada protegida e interoperabilidade com ecossistemas C, .NET e Python. O próximo passo técnico é validar a gramática e as regras semânticas por meio de exemplos executáveis e testes automatizados, mantendo explícitas as decisões ainda experimentais.
+
+\end{document}

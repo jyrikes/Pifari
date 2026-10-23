@@ -1,0 +1,7 @@
+@ Diretivas e classe simples
+#include <stdio.h>
+import math
+Link to "libm.so"
+:= Pessoa
+    =: nome txt
+    =: idade int

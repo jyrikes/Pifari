@@ -1,0 +1,31 @@
+@ Benchmark de multiplicacao de matrizes 2D.
+N = 60
+A = []
+B = []
+for i in range(N)
+    linha_a = []
+    linha_b = []
+    for j in range(N)
+        linha_a = linha_a + [i + j]
+        linha_b = linha_b + [i - j]
+    A = A + [linha_a]
+    B = B + [linha_b]
+function multiplicar(A, B, n)
+    C = []
+    for i in range(n)
+        linha = []
+        for j in range(n)
+            soma = 0
+            for k in range(n)
+                soma = soma + (A[i][k] * B[k][j])
+            linha = linha + [soma]
+        C = C + [linha]
+    return C
+inicio_puro = agora_ns()
+C_puro = multiplicar(A, B, N)
+tempo_puro = (agora_ns() - inicio_puro) / 1000000
+print("PIFARI matrix interpretado N=", N, "ms=", tempo_puro, "checksum=", C_puro[0][0] + C_puro[N - 1][N - 1])
+inicio_nativo = agora_ns()
+C = matmul(A, B)
+tempo_nativo = (agora_ns() - inicio_nativo) / 1000000
+print("PIFARI matrix nativo N=", N, "ms=", tempo_nativo, "checksum=", C[0][0] + C[N - 1][N - 1])

@@ -1,0 +1,475 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazilian]{babel}
+\usepackage{geometry}
+\geometry{left=3cm,right=2cm,top=3cm,bottom=2cm}
+\usepackage{setspace}
+\onehalfspacing
+\usepackage{array,tabularx,longtable,booktabs}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage[hidelinks]{hyperref}
+\usepackage{enumitem}
+\setlist{nosep}
+\lstdefinelanguage{Pifari}{
+  sensitive=true,
+  morekeywords={if,else,elseif,for,while,break,continue,return,import,Link,to,agent,task,async,await,spawn,send,receive,close,try,catch,finally,throw,raise,match,case,const,dynamic,public,private,protected,static,override,extends,implements,as,from,in,where,reduce,map,filter},
+  morekeywords=[2]{int,char,short,long,float,double,bool,void,signed,unsigned,byte,txt,Int,Float,Bool,Text,Null,None,List,Map,Set,Task,Agent}
+}
+\lstset{language=Pifari,basicstyle=\ttfamily\small,breaklines=true,columns=fullflexible,frame=single,showstringspaces=false}
+\title{Definição da Linguagem de Programação Pifari\\Especificação Técnica — Versão 3}
+\author{Documento de projeto}
+\date{18 de outubro de 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+Este documento especifica a proposta da linguagem Pifari, com extensão \texttt{.pif}, orientada à composição de operações, programação concorrente e paralela, agentes nativos e interoperabilidade com C, Python e bibliotecas do sistema operacional. A versão estabelece uma base normativa de trabalho: sintaxe, léxico, tipos, semântica, fluxo, tarefas, memória, interoperabilidade, erros e conformidade. Onde uma escolha ainda exigir protótipo ou decisão de implementação, ela é identificada como tal, sem apresentar comportamento não implementado como fato.
+\end{abstract}
+\tableofcontents
+\newpage
+\section{Escopo, identidade e terminologia}
+\subsection{Identidade}
+Pifari é uma linguagem interpretada, de extensão \texttt{.pif}, concebida para equilibrar legibilidade, expressividade, segurança e acesso a recursos de baixo nível. A linguagem pretende oferecer interoperabilidade nativa com C e Python, abstrações de tarefas assíncronas e paralelas e agentes com estado próprio.
+\subsection{Objetivos}
+\begin{itemize}
+\item interpretação direta do programa;
+\item sistema de tipos híbrido: inferência estática sempre que possível e verificações dinâmicas quando necessárias;
+\item tipos primitivos compatíveis conceitualmente com os tipos fundamentais de C, além de tipos de alto nível;
+\item tarefas, agentes, mensagens e paralelismo coordenados pelo runtime;
+\item memória gerenciada automaticamente, com recursos explícitos de baixo nível;
+\item composição funcional e processamento de valores iteráveis;
+\item interoperabilidade com bibliotecas C, módulos Python e bibliotecas do sistema operacional;
+\item gramática e semântica especificadas antes da implementação de referência.
+\end{itemize}
+\subsection{Termos normativos}
+As palavras \textbf{DEVE}, \textbf{NÃO DEVE}, \textbf{RECOMENDA-SE} e \textbf{PODE} indicam, respectivamente, requisito obrigatório, proibição, prática recomendada e recurso opcional. A especificação distingue: (a) decisões confirmadas pelo projeto; (b) regras recomendadas para a base normativa desta versão; (c) pontos cuja validação depende de protótipo. Uma implementação conforme deve documentar qualquer recurso ainda não suportado.
+\subsection{Princípios}
+O programa deve ser previsível, os efeitos colaterais devem ser identificáveis, as dependências de dados devem ser explícitas para o runtime e a concorrência não deve alterar silenciosamente a semântica sequencial. A otimização paralela só pode ocorrer quando a implementação preservar o comportamento observável definido pela linguagem.
+\section{Modelo de execução}
+\subsection{Interpretador}
+A arquitetura de referência é um interpretador direto organizado em fases:
+\begin{enumerate}
+\item leitura UTF-8 e normalização de quebras de linha;
+\item análise léxica e emissão de tokens com linha e coluna;
+\item análise sintática e construção de AST;
+\item resolução de nomes, escopos e imports;
+\item análise de tipos e capacidades;
+\item validação de efeitos, dependências e fronteiras de interoperabilidade;
+\item execução da AST por uma máquina de avaliação;
+\item escalonamento de tarefas, coleta de resultados e relatório de erros.
+\end{enumerate}
+O uso de AST é recomendado para diagnósticos e validação; uma implementação pode usar representação interna equivalente se preservar os requisitos observáveis.
+\subsection{Runtime e encerramento}
+O runtime gerencia o escalonamento sobre um conjunto de threads, a fila de tarefas, sincronização, cancelamento cooperativo, recursos externos e memória compartilhada. O programa não termina enquanto houver tarefas ou agentes pertencentes ao escopo do programa sem estado terminal. O encerramento global solicita o fechamento ordenado dos recursos e aguarda a finalização; tarefas bloqueadas em recursos externos devem ter política de timeout documentada.
+\section{Tipos e valores}
+\subsection{Tipos primitivos}
+Pifari deve fornecer tipos de baixo nível compatíveis conceitualmente com C. O tamanho e o intervalo dos tipos de largura dependente da plataforma devem ser definidos pela implementação-alvo e expostos por constantes de plataforma; não se deve prometer largura universal quando C não a garante.
+\begin{longtable}{>{\ttfamily}p{2.4cm}p{3.0cm}p{8.0cm}}
+\toprule
+Tipo Pifari & Correspondência conceitual & Significado\\
+\midrule
+void & void & ausência de valor de retorno; não é valor armazenável comum\\
+bool & \texttt{\_Bool} / bool & valor lógico \texttt{true} ou \texttt{false}\\
+char & char & unidade de caractere/byte conforme ABI; interoperabilidade exige convenção explícita\\
+byte & unsigned char & unidade de 8 bits recomendada\\
+short & short int & inteiro curto, com sinal por padrão\\
+int & int & inteiro de tamanho definido pela ABI-alvo\\
+long & long int & inteiro longo conforme ABI\\
+long long & long long int & inteiro longo longo\\
+unsigned short/int/long/long long & equivalentes C sem sinal & inteiros não negativos com largura da ABI\\
+float & float & ponto flutuante de precisão simples\\
+double & double & ponto flutuante de precisão dupla\\
+long double & long double & precisão estendida conforme plataforma\\
+\bottomrule
+\end{longtable}
+A grafia de tipos compostos por qualificadores deve ser aceita como sequência de tokens, por exemplo \texttt{unsigned long}. \texttt{char} não deve ser usado como sinônimo implícito de texto Unicode. Para texto, utiliza-se \texttt{txt} ou \texttt{Text}.
+\subsection{Tipos de alto nível}
+\begin{itemize}
+\item \texttt{Text}: sequência Unicode;
+\item \texttt{List[T]}: sequência ordenada de elementos;
+\item \texttt{Map[K,V]}: associação entre chaves e valores;
+\item \texttt{Set[T]}: coleção de valores únicos;
+\item \texttt{Tuple[T1,\ldots,Tn]}: sequência de tamanho fixo;
+\item \texttt{Range}: sequência numérica iterável;
+\item \texttt{Option[T]}: valor presente ou ausente, se adotado pela biblioteca padrão;
+\item \texttt{Result[T,E]}: resultado de sucesso ou erro, se adotado pela biblioteca padrão;
+\item \texttt{Task[T]}: resultado futuro de uma operação;
+\item \texttt{Agent}: entidade com estado próprio, mensagens e ciclo de vida;
+\item \texttt{Null}: valor nulo da Pifari.
+\end{itemize}
+\subsection{Booleanos e ausência de valor}
+\texttt{true} e \texttt{false} são literais booleanos. \texttt{Null} e \texttt{null} são grafias equivalentes para o valor nulo da Pifari; a implementação deve normalizar ambas para um único valor. \texttt{None} é reservado à interoperabilidade e representação de ausência oriunda do Python, salvo se uma biblioteca estabelecer conversão explícita. Não se deve presumir que \texttt{Null}, Python \texttt{None} e ponteiros C nulos sejam representações idênticas em memória.
+\subsection{Literais textuais}
+Aspas simples e duplas são aceitas: \texttt{"texto"} e \texttt{'texto'}. Para manter compatibilidade lexical com C e Python, escapes como \texttt{\textbackslash n}, \texttt{\textbackslash t}, \texttt{\textbackslash r}, \texttt{\textbackslash\textbackslash} e escape da aspa delimitadora devem ser definidos. Interpolação de texto, por exemplo \texttt{"Olá, \{nome\}"}, somente é válida quando o parser reconhece explicitamente a forma interpolada.
+A forma \texttt{txt(conteúdo)} permite texto sem aspas. Recomendação normativa: o conteúdo sem aspas é texto literal até o parêntese de fechamento correspondente, não uma expressão. Parênteses aninhados, escapes e texto vazio devem ter regras próprias. Quando o texto contiver delimitadores ambíguos, deve-se usar aspas. A forma sem aspas não deve interpretar identificadores como variáveis.
+\subsection{Coleções e inferência}
+Coleções homogêneas são o padrão recomendado. Uma coleção heterogênea exige um tipo união explícito ou um tipo comum seguro; a implementação não deve apagar tipos silenciosamente. O tipo de uma variável inferida é obtido da inicialização. Inferência não equivale a permitir qualquer mudança posterior de tipo.
+\section{Variáveis, atribuição e escopos}
+\subsection{Declaração dinâmica e tipada}
+\texttt{=} cria ou atualiza uma variável dinâmica, conforme as regras de ambiente e escopo. Exemplo: \texttt{idade = 10}. A forma \texttt{nome =: tipo(valor)} declara uma variável com tipo explícito e fixa seu tipo. Exemplo: \texttt{idade =: int(20)}. A atribuição posterior a uma variável tipada só é válida se o valor for compatível com o tipo declarado; não altera o tipo da variável.
+\begin{lstlisting}
+idade = 10
+idade = "dez"             @ dinamica: tipo pode variar @
+pontos =: int(20)
+pontos = 21                @ valido: inteiro @
+@ pontos = "vinte" invalido: tipo incompativel @
+nome =: txt(Maria)
+nome_c =: txt('Maria')
+nome_python =: txt("Maria")
+\end{lstlisting}
+A declaração tipada exige construtor compatível com o tipo declarado. O cast não deve ser implícito: quando uma conversão for necessária, deve ser chamada uma função de conversão definida pela linguagem ou pelo programador.
+\subsection{Mutabilidade, constantes e inicialização}
+Uma variável comum é mutável. \texttt{const} declara um vínculo que não pode receber nova atribuição após inicializado. A mutabilidade do vínculo é distinta da mutabilidade interna do objeto. Toda variável deve ser inicializada antes de leitura, salvo se o tipo possuir valor padrão explicitamente especificado. Ler variável não declarada, não inicializada ou fora de escopo é erro.
+\subsection{Escopo e visibilidade}
+O escopo léxico é determinado por módulos, classes, funções e blocos. Reutilizar nome no mesmo escopo é proibido, salvo declaração de sobrecarga autorizada. Sombreamento em escopo interno deve ser documentado e diagnosticado. Atributos e métodos de classe são privados por padrão; acesso externo exige visibilidade explicitamente pública.
+\section{Classes, atributos e métodos}
+\subsection{Sintaxe declarativa}
+\texttt{:=} inicia uma declaração de classe. \texttt{=:} introduz a seção de membros e declarações de atributos ou métodos, conforme a produção gramatical. Como \texttt{=:} também declara variáveis tipadas, o parser deve distinguir os usos pelo contexto: após o cabeçalho de classe, inicia membros; em uma instrução de atribuição, declara variável tipada. A distinção deve ser gramatical, nunca heurística.
+\begin{lstlisting}
+:= Pessoa
+    =: nome txt
+    =: idade int
+
+    =: apresentar() 
+        print(nome)
+\end{lstlisting}
+Este bloco ilustra a intenção, mas a forma definitiva dos cabeçalhos, construtores, parâmetros, tipos de retorno, inicializadores, herança e chamadas de método deve ser validada na gramática executável. Até que esses pontos sejam formalizados, o exemplo é não normativo.
+\subsection{Contratos de classes}
+A especificação completa deve definir: criação de instâncias; construtor; campos de instância e de classe; métodos de instância e estáticos; acesso privado/público/protegido; herança; sobrescrita; interfaces ou protocolos; inicialização; destruição e liberação de recursos; igualdade e representação textual. Nenhuma herança múltipla ou metaclasse é presumida nesta versão.
+\section{Operadores e expressões}
+\subsection{Inventário de operadores}
+\begin{longtable}{p{3.1cm}p{3.3cm}p{6.8cm}}
+\toprule
+Operadores & Categoria & Regra\\
+\midrule
+\texttt{+ - * / // \% **} & aritméticos & soma, subtração, multiplicação, divisão real, divisão inteira, resto e potenciação\\
+\texttt{== != < <= > >=} & comparação & igualdade, diferença e ordenação quando definida para o tipo\\
+\texttt{and or not} & lógicos & conjunção, disjunção e negação booleana com curto-circuito\\
+\texttt{=} & atribuição dinâmica & cria ou atualiza vínculo dinâmico\\
+\texttt{=:} & declaração tipada/membros & declara tipo explícito; em classe introduz membros\\
+\texttt{:=} & declaração de classe & inicia declaração de classe\\
+\texttt{->} & lambda & introduz expressão lambda; não é operador geral de retorno\\
+\texttt{|>} & fluxo direto & encadeia etapas; também pode iterar valores iteráveis conforme a forma gramatical\\
+\texttt{<|} & aplicação/entrada & aplica o valor à operação à direita, conforme regra formal\\
+\texttt{>|} & distribuição paralela & distribui trabalho entre ramos ou trabalhadores\\
+\texttt{|<} & junção & sincroniza e reúne resultados dos ramos participantes\\
+\texttt{.} & membro & acesso a membro público ou permitido\\
+\texttt{[]} & indexação & acesso por índice/chave quando suportado\\
+\texttt{()} & chamada/agrupamento & chamada de função e agrupamento\\
+\bottomrule
+\end{longtable}
+\subsection{Precedência e associatividade recomendadas}
+Da maior para a menor precedência:
+\begin{enumerate}
+\item agrupamento, acesso a membro, indexação e chamada;
+\item operador unário \texttt{not}, sinal unário;
+\item \texttt{**}, associativo à direita;
+\item \texttt{* / // \%}, associativos à esquerda;
+\item \texttt{+ -}, associativos à esquerda;
+\item comparações \texttt{== != < <= > >=}; comparações encadeadas devem ser definidas ou proibidas explicitamente;
+\item \texttt{and};
+\item \texttt{or};
+\item composição de fluxo \texttt{|> <|};
+\item distribuição/junção \texttt{>| |<}, válidos apenas em contexto de fluxo;
+\item atribuição e declarações, com restrições sintáticas próprias.
+\end{enumerate}
+A tabela é a base normativa recomendada e deve ser codificada em testes de parser. Parênteses são o mecanismo explícito para eliminar dúvidas. A atribuição não pode ser usada como expressão booleana por coerção implícita.
+\subsection{Semântica aritmética}
+\texttt{/} produz resultado de ponto flutuante. \texttt{//} calcula quociente inteiro conforme uma regra documentada para negativos; recomenda-se truncamento em direção a zero para alinhamento com C. \texttt{\%} deve satisfazer a relação entre dividendo, divisor e quociente escolhida para \texttt{//}. Divisão por zero gera erro de execução. Overflow de inteiros deve ser definido por modo: recomendado erro detectável, sem comportamento indefinido. \texttt{**} com expoente e base incompatíveis exige conversão explícita.
+\subsection{Operadores lógicos e comparação}
+Condições exigem \texttt{Bool}; números, textos e coleções não são convertidos implicitamente para booleanos. \texttt{and} e \texttt{or} usam curto-circuito. Comparações entre tipos diferentes são proibidas, salvo regra específica segura. Comparação de coleções deve ser definida por tipo; objetos sem relação de ordem não aceitam \texttt{<} ou \texttt{>}.
+\section{Fluxo de controle}
+\subsection{Condição direta}
+A linguagem permite condição explícita \texttt{if}, \texttt{elseif} e \texttt{else}. Também prevê a forma concisa em que uma expressão booleana inicia um bloco:
+\begin{lstlisting}
+test = true
+test
+    print("ola")
+else
+    |> 0
+\end{lstlisting}
+A forma acima expressa a intenção de que um valor Bool possa iniciar uma decisão sem escrever \texttt{if}. A gramática deve definir como reconhecer o bloco, como associar \texttt{else} e se o resultado do bloco é um valor. Não se pode interpretar um valor não booleano dessa forma.
+\subsection{Condicionais convencionais e valores}
+\begin{lstlisting}
+if (idade >= 18) {
+    print("Maior de idade")
+} elseif (idade >= 13) {
+    print("Adolescente")
+} else {
+    print("Crianca")
+}
+\end{lstlisting}
+A palavra reservada recomendada é \texttt{elseif}, como token único. Aceitar \texttt{else if} como sinônimo é opcional e deve ser especificado. Se uma condicional produzir valor, todos os caminhos que completam normalmente devem produzir valores compatíveis; um caminho que termina em erro ou não retorna pode ser tratado separadamente.
+\subsection{Iteração}
+A forma iterável desejada é:
+\begin{lstlisting}
+numeros |> numero |> print()
+\end{lstlisting}
+Interpretação recomendada: para cada elemento de \texttt{numeros}, vincular o elemento a \texttt{numero} e executar \texttt{print(numero)}. O nome de ligação é uma variável local ao corpo e não deve vazar para o escopo externo. Coleções ordenadas preservam sua ordem. Para conjuntos sem ordem definida, a ordem de iteração não é garantida.
+\subsection{Laços explícitos}
+\texttt{for} percorre um iterável; \texttt{while} repete enquanto a condição Bool for verdadeira; \texttt{break} encerra o laço mais interno; \texttt{continue} avança à próxima iteração; ambos são inválidos fora de laço. Laços não devem ser paralelizados automaticamente quando houver efeitos colaterais ou dependências não comprovadamente seguras.
+\subsection{Capacidades}
+A biblioteca e o sistema de tipos podem definir protocolos como \texttt{Iterable}, \texttt{Boolean}, \texttt{Comparable}, \texttt{Composable} e \texttt{Async}. A capacidade deve ser verificada estaticamente quando possível. A existência e os nomes finais desses protocolos precisam ser congelados antes da versão estável.
+\section{Funções e módulos}
+\subsection{Funções e lambdas}
+\texttt{->} é reservado para expressões lambda. A definição de funções nomeadas deve ter uma forma única, com parâmetros, tipos opcionais, tipo de retorno opcional e corpo. Recomenda-se retorno explícito por \texttt{return}; retorno pela última expressão só deve ser habilitado se for uniforme em todos os contextos.
+\begin{lstlisting}
+dobrar = (x) -> x * 2
+resultado = dobrar(5)
+\end{lstlisting}
+Este exemplo ilustra a lambda e não fixa a sintaxe definitiva de funções nomeadas. Parâmetros, argumentos nomeados, valores padrão, sobrecarga, recursão, funções genéricas e closures devem ter regras próprias.
+\subsection{Módulos e importação}
+\texttt{import} importa módulos Pifari ou módulos Python por um mecanismo de importação definido. A resolução de módulos deve ter ordem documentada, impedir ciclos perigosos ou detectá-los e informar caminhos de origem em erros. Importar um módulo não deve executar repetidamente sua inicialização, salvo especificação explícita.
+\section{Concorrência, paralelismo e tarefas}
+\subsection{Distinções}
+Concorrência significa que tarefas têm progresso sobreposto; paralelismo significa execução simultânea em mais de um recurso. O runtime pode escalonar tarefas concorrentes sem garantir paralelismo físico em todo ambiente. A implementação não deve prometer desempenho linear nem execução paralela de operações bloqueadas pelo GIL do Python ou por limitações de biblioteca.
+\subsection{Ciclo de vida da tarefa}
+Estados conceituais: \texttt{Created}, \texttt{Ready}, \texttt{Running}, \texttt{Waiting}, \texttt{Succeeded}, \texttt{Failed} e \texttt{Cancelled}. Estados terminais são \texttt{Succeeded}, \texttt{Failed} e \texttt{Cancelled}. Uma tarefa criada não precisa começar imediatamente; deve ser iniciada pelo runtime ou por construção explícita definida na linguagem. A especificação deve escolher uma única regra consistente para o início. O resultado só pode ser lido após sucesso ou por operação assíncrona de espera.
+\subsection{await e tarefas}
+\texttt{await} espera a resolução de uma tarefa ou operação assíncrona e é válido apenas em contexto assíncrono ou em ponto de entrada que o runtime autorize. O uso de \texttt{await} em valor que não representa operação aguardável é erro de tipo. O resultado de uma tarefa falha propaga a falha ao ponto de espera, mas a falha permanece associada à tarefa original.
+\subsection{Operadores de fluxo paralelo}
+\begin{itemize}
+\item \texttt{|>} encadeia etapas e, na forma iterável, aplica a operação a cada elemento;
+\item \texttt{>|} inicia distribuição paralela explícita. Para coleções, a política padrão recomendada é dividir os elementos entre trabalhadores, preservando índice de origem;
+\item \texttt{|<} é uma barreira de junção: espera todas as tarefas do grupo e agrega os resultados na ordem original;
+\item \texttt{<|} encaminha/aplica um valor à operação à direita, mas não inicia paralelismo por si só.
+\end{itemize}
+A sintaxe concreta de ramos múltiplos, identificadores de ramo e captura de resultados deve ser definida por produção gramatical antes de implementar esses operadores. Um valor individual não deve ser duplicado ou compartilhado entre ramos implicitamente quando isso puder criar corrida; deve-se especificar cópia, empréstimo seguro ou compartilhamento sincronizado.
+\subsection{Falhas e cancelamento}
+A regra de projeto é que uma falha fica associada à tarefa que falhou. Tarefas independentes continuam; tarefas dependentes não podem consumir resultado inexistente e passam a falhar, aguardar recuperação ou ser canceladas conforme política explícita. O runtime não deve cancelar todo o processo por uma falha isolada, salvo se a falha for não recuperável ou o programa solicitar essa política.
+O cancelamento é cooperativo. Tarefas verificam cancelamento em pontos seguros, como espera, início de etapa e chamadas de runtime. Operações nativas que não possam ser interrompidas devem declarar essa limitação. Recursos adquiridos devem ser liberados por mecanismo equivalente a \texttt{finally}/RAII.
+\subsection{Agentes}
+Agentes são construções nativas com estado próprio, capacidade de receber mensagens e executar tarefas assíncronas. Permanecem ativos até receber ordem de encerramento, falha fatal ou encerramento do programa. Mensagens e memória compartilhada são mecanismos igualmente importantes, mas não intercambiáveis: mensagens transferem dados segundo contrato; memória compartilhada exige proteção e sincronização.
+A sintaxe final de declaração de agente, protocolo de mensagens, mailbox, backpressure, garantias de entrega, ordenação, supervisão e encerramento deve ser formalizada antes da implementação. Não se presume entrega exatamente uma vez para mensagens externas.
+\subsection{Memória compartilhada}
+O runtime protege acessos compartilhados por padrão. A implementação deve definir modelo de propriedade, referências, regiões compartilhadas, locks ou primitivas equivalentes, operações atômicas, visibilidade de escrita e prevenção de deadlocks. A segurança automática não pode significar que toda corrida lógica seja detectável. O programador deve poder solicitar mecanismos explícitos de baixo nível, com verificações e avisos adequados.
+\section{Interoperabilidade}
+\subsection{\texttt{import}}
+\texttt{import} é destinado a módulos Pifari e módulos Python. Deve permitir alias e importação seletiva somente se essas formas forem especificadas na gramática. O adaptador Python deve definir versão suportada, gestão do interpretador Python, conversão de exceções e objetos, ciclo de vida de referências e limitações de concorrência.
+\subsection{\texttt{\#include}}
+\texttt{\#include} é uma diretiva de interoperabilidade e inclusão de declarações/cabeçalhos C e, mediante adaptadores específicos, interfaces C++ e C\#. A diretiva não deve fingir que cabeçalhos C, C++ e assemblies .NET têm a mesma semântica. A implementação deve encaminhar cada alvo ao adaptador correto, documentar a ferramenta de compilação/metadata e rejeitar combinações sem suporte.
+\subsection{\texttt{Link to}}
+\texttt{Link to} solicita ligação com bibliotecas ou símbolos disponibilizados pelo sistema operacional ou pelo próprio ecossistema Pifari. Pode referenciar bibliotecas dinâmicas, estáticas ou artefatos de ligação gerados pelo projeto. A resolução ocorre antes da execução do programa, na etapa de preparação/ligação; símbolos ausentes devem gerar erro de ligação claro. A gramática de caminhos, nomes de bibliotecas, símbolos e opções de ligação ainda deve ser definida.
+\subsection{Compatibilidade de tipos e ABI}
+A fronteira de interoperabilidade exige conversões explícitas ou declaradas em bindings. Inteiros devem respeitar largura e sinal; strings precisam de encoding, tamanho e propriedade de memória definidos; callbacks precisam de convenção de chamada e ciclo de vida documentados; ponteiros não devem ser tratados como objetos gerenciados sem wrapper. Conversões automáticas só podem ocorrer quando forem seguras, reversíveis ou expressamente configuradas.
+\section{Memória e recursos}
+A memória gerenciada é o padrão. O runtime pode utilizar contagem de referências, rastreamento, regiões ou estratégia híbrida, mas deve especificar ciclos, finalização e interação com objetos externos. Liberação de recursos externos não deve depender exclusivamente de coleta não determinística. Arquivos, sockets, locks, handles nativos e referências Python devem ter escopo e fechamento explícitos ou mecanismos determinísticos equivalentes.
+\section{Regras léxicas}
+\subsection{Codificação e identificadores}
+O fonte usa UTF-8. Identificadores começam por letra ASCII ou sublinhado e continuam com letras ASCII, dígitos ou sublinhados; a linguagem diferencia maiúsculas e minúsculas. Recomenda-se não usar acentos em identificadores na primeira versão. Palavras reservadas não podem ser usadas como identificadores sem mecanismo de escape, se houver.
+\subsection{Números}
+Inteiros decimais usam dígitos, com sublinhado interno opcional se definido pela implementação. Reais usam ponto decimal, por exemplo \texttt{3.14}; notação científica deve seguir a forma \texttt{1.2e-3}. O sinal unário é operador, não parte do token numérico. Overflow em literal deve ser diagnosticado.
+\subsection{Comentários}
+Todo comentário começa com \texttt{@} e termina no próximo \texttt{@}. A regra vale para comentário curto ou multilinha. Não há aninhamento na versão inicial. Um \texttt{@} sem fechamento produz erro léxico apontando a posição de abertura. Como o delimitador pode aparecer em texto, dentro de literais textuais o lexer respeita primeiro o estado de string.
+\begin{lstlisting}
+@ comentario curto @
+@ comentario longo
+que pode atravessar varias linhas @
+mensagem =: txt("O caractere @ dentro de string nao abre comentario")
+\end{lstlisting}
+\subsection{Espaços, tabulações e chaves}
+Espaços e tabulações são permitidos. Quando a indentação for usada para legibilidade, ela não define o bloco por si só; chaves \texttt{\{} e \texttt{\}} delimitam blocos na sintaxe convencional. Para construções concisas de condição e iteração sem chaves, a gramática deve definir precisamente a extensão do bloco e a associação de \texttt{else}. Uma implementação não pode misturar regras de indentação obrigatória e chaves como se ambas fossem delimitadores independentes sem especificar sua interação. Recomenda-se que a primeira gramática normativa use chaves para blocos convencionais e trate formas sem chaves como produções separadas.
+\subsection{Inventário de palavras reservadas}
+A lista normativa inicial recomendada é:
+\begin{longtable}{p{3.0cm}p{10.2cm}}
+\toprule
+Grupo & Palavras\\
+\midrule
+Lógicos e literais & \texttt{true}, \texttt{false}, \texttt{Null}, \texttt{null}\\
+Controle & \texttt{if}, \texttt{else}, \texttt{elseif}, \texttt{for}, \texttt{while}, \texttt{break}, \texttt{continue}, \texttt{return}, \texttt{match}, \texttt{case}\\
+Tarefas & \texttt{task}, \texttt{async}, \texttt{await}, \texttt{spawn}, \texttt{cancel}\\
+Agentes e mensagens & \texttt{agent}, \texttt{send}, \texttt{receive}, \texttt{close}\\
+Exceções & \texttt{try}, \texttt{catch}, \texttt{finally}, \texttt{throw}, \texttt{raise}\\
+Declarações & \texttt{const}, \texttt{dynamic}, \texttt{public}, \texttt{private}, \texttt{protected}, \texttt{static}, \texttt{override}, \texttt{extends}, \texttt{implements}\\
+Módulos e interoperabilidade & \texttt{import}, \texttt{from}, \texttt{as}, \texttt{Link}, \texttt{to}\\
+Operações de coleção & \texttt{in}, \texttt{where}, \texttt{map}, \texttt{filter}, \texttt{reduce}\\
+\bottomrule
+\end{longtable}
+Esta lista é uma reserva proposta; uma palavra só deve ser incluída no lexer normativo quando sua produção sintática estiver especificada. \texttt{int}, \texttt{char}, \texttt{float}, \texttt{double}, \texttt{bool}, \texttt{void}, \texttt{txt} e os demais nomes de tipos podem ser tratados como identificadores em contexto de tipo, reduzindo reservas desnecessárias.
+\subsection{Inventário de pontuação e operadores}
+\begin{longtable}{p{3.4cm}p{9.8cm}}
+\toprule
+Tokens & Uso\\
+\midrule
+\texttt{( ) [ ] \{ \} , ; . :} & agrupamento, coleção, bloco, separação, membro e anotação\\
+\texttt{= =: := ->} & atribuição, declaração tipada/membro, declaração de classe e lambda\\
+\texttt{+ - * / // \% **} & aritmética\\
+\texttt{== != < <= > >=} & comparação\\
+\texttt{and or not} & lógica booleana\\
+\texttt{|> <| >| |<} & fluxo, aplicação, distribuição e junção\\
+\texttt{\#include} & diretiva de interoperabilidade processada na etapa de preparação\\
+\bottomrule
+\end{longtable}
+\section{Gramática livre de contexto (GLC)}
+\subsection{Convenções}
+A gramática abaixo descreve o núcleo de referência. \texttt{IDENT}, \texttt{INT}, \texttt{FLOAT}, \texttt{STRING}, \texttt{NEWLINE} e \texttt{EOF} são tokens lexicais. Comentários são removidos pelo lexer, mas as posições de origem são preservadas. A GLC não substitui as verificações semânticas de tipos, nomes, efeitos e dependências.
+\begin{lstlisting}
+programa       ::= lista_itens EOF
+lista_itens    ::= item lista_itens | vazio
+item           ::= declaracao | comando | expressao NEWLINE
+declaracao     ::= declaracao_variavel
+                 | declaracao_classe
+                 | declaracao_funcao
+                 | importacao
+declaracao_variavel ::= IDENT "=" expressao
+                      | IDENT "=:" tipo "(" expressao ")"
+declaracao_classe ::= ":=" IDENT bloco_membros
+bloco_membros  ::= NEWLINE INDENT lista_membros DEDENT
+lista_membros  ::= membro lista_membros | vazio
+membro         ::= "=:" IDENT tipo
+                 | "=:" IDENT "(" parametros ")" bloco
+declaracao_funcao ::= IDENT ":" "(" parametros ")" tipo_retorno bloco
+parametros     ::= IDENT lista_parametros | vazio
+lista_parametros ::= "," IDENT lista_parametros | vazio
+tipo_retorno   ::= "->" tipo | vazio
+tipo           ::= IDENT | tipo_generico
+tipo_generico  ::= IDENT "[" tipo lista_tipos "]"
+lista_tipos    ::= "," tipo lista_tipos | vazio
+importacao     ::= "import" caminho_modulo
+                 | "import" caminho_modulo "as" IDENT
+bloco          ::= "{" lista_itens "}"
+                 | NEWLINE INDENT lista_itens DEDENT
+comando        ::= condicional | repeticao | retorno
+                 | expressao NEWLINE
+condicional    ::= "if" "(" expressao ")" bloco
+                   lista_elseif opcional_else
+                 | expressao_bool bloco lista_elseif opcional_else
+lista_elseif   ::= "elseif" "(" expressao ")" bloco lista_elseif
+                 | vazio
+opcional_else  ::= "else" bloco | vazio
+repeticao      ::= "while" "(" expressao ")" bloco
+                 | "for" IDENT "in" expressao bloco
+retorno        ::= "return" expressao_opcional NEWLINE
+expressao_opcional ::= expressao | vazio
+expressao      ::= atribuicao | fluxo
+atribuicao     ::= IDENT "=" expressao
+fluxo          ::= logica lista_fluxo
+lista_fluxo    ::= operador_fluxo logica lista_fluxo | vazio
+operador_fluxo ::= "|>" | "<|" | ">|" | "|<"
+logica         ::= comparacao
+                 | logica "and" comparacao
+                 | logica "or" comparacao
+                 | "not" logica
+comparacao     ::= soma operador_comparacao soma
+                 | soma
+operador_comparacao ::= "==" | "!=" | "<" | "<=" | ">" | ">="
+soma           ::= produto
+                 | soma "+" produto
+                 | soma "-" produto
+produto        ::= potencia
+                 | produto "*" potencia
+                 | produto "/" potencia
+                 | produto "//" potencia
+                 | produto "%" potencia
+potencia       ::= unario "**" potencia | unario
+unario         ::= "-" primario | "+" primario | primario
+primario       ::= literal | IDENT | chamada | "(" expressao ")"
+                 | lista | lambda
+chamada        ::= IDENT "(" argumentos ")"
+argumentos     ::= expressao lista_argumentos | vazio
+lista_argumentos ::= "," expressao lista_argumentos | vazio
+lista          ::= "[" argumentos "]"
+lambda         ::= IDENT "->" expressao
+literal        ::= INT | FLOAT | STRING | "true" | "false" | "Null"
+caminho_modulo ::= IDENT
+\end{lstlisting}
+\subsection{Limites da gramática de referência}
+A GLC acima é um esqueleto normativo inicial, não uma gramática de produção completa. Antes do parser estável, devem ser corrigidos e congelados: lista de itens e terminadores; declarações tipadas versus atribuição; tipos C compostos; texto sem aspas em \texttt{txt}; expressões condicionais; blocos implícitos; classes; sintaxe dos ramos paralelos; precedência dos quatro operadores de fluxo; diretivas de pré-processamento; e recuperação de erro. A gramática final deve ser não ambígua ou declarar explicitamente as regras de desambiguação.
+\section{Semântica estática e dinâmica}
+\subsection{Análise estática}
+Antes da execução, o interpretador deve resolver nomes e verificar, sempre que possível: declarações duplicadas, variáveis não declaradas, inicialização, compatibilidade de atribuições tipadas, argumentos de chamadas, retorno de função, uso de \texttt{break}/\texttt{continue}, uso de \texttt{await}, capacidades iteráveis e compatibilidade entre ramos de fluxo. Erros que dependem de valores dinâmicos podem ser detectados em execução.
+\subsection{Conversões}
+Todas as conversões entre tipos são explícitas, salvo promoção aritmética segura que seja formalmente aprovada. Conversões nativas e funções definidas pelo programador são permitidas. Cada conversão deve definir: tipos de origem e destino; comportamento em overflow; perda de precisão; falha de conversão; e efeito sobre propriedade e memória. Não existe cast universal que torne qualquer valor válido sem verificação.
+\subsection{Efeitos e determinismo}
+Funções devem ter efeitos observáveis classificáveis: pura, leitura, escrita, I/O, tarefa, agente ou chamada externa. A análise de efeitos pode impedir paralelização automática de operações incompatíveis. Quando o runtime não consegue provar segurança, deve executar sequencialmente ou exigir anotação explícita, em vez de assumir independência.
+\subsection{Semântica operacional resumida}
+A avaliação de uma expressão produz um valor, uma falha ou uma tarefa pendente. Uma instrução pode alterar o ambiente local, criar tarefa ou realizar efeito externo. A sequência de instruções preserva ordem observável. Para um fluxo paralelo, o runtime registra o grupo de tarefas, dependências e índices de origem; a junção aguarda os participantes e agrega resultados conforme política declarada. Falhas permanecem vinculadas às tarefas e são expostas ao ponto de junção ou espera.
+\section{Erros e diagnósticos}
+A implementação deve distinguir:
+\begin{itemize}
+\item erro léxico: caractere inválido, string ou comentário sem fechamento, literal numérico malformado;
+\item erro sintático: token inesperado, delimitador ausente, bloco inválido ou sequência de operadores sem operandos;
+\item erro semântico: nome inexistente, declaração duplicada, tipo incompativel, retorno inválido ou uso indevido de capacidade;
+\item erro de execução: divisão por zero, cast inválido, índice fora dos limites, falha externa ou exceção não tratada;
+\item erro de ligação: biblioteca, símbolo ou ABI indisponível;
+\item erro de concorrência: deadlock detectado, tarefa cancelada, dependência falha ou uso proibido de recurso compartilhado.
+\end{itemize}
+Toda mensagem deve conter categoria, mensagem legível, arquivo, linha e coluna quando disponíveis, trecho de código e sugestão de correção quando segura. Uma falha de tarefa deve preservar a pilha de chamadas e o identificador da tarefa. O runtime deve evitar continuar em estado inconsistente.
+\section{Testes de conformidade}
+Cada regra normativa deve ter testes positivos e negativos. A suíte mínima deve conter:
+\begin{enumerate}
+\item lexer: comentários curtos/multilinha, aspas simples/duplas, escapes, UTF-8, tokens compostos e operadores;
+\item parser: precedência, associatividade, blocos, classes, declarações e erros de delimitadores;
+\item tipos: inferência, \texttt{=:}, variáveis dinâmicas, casts e compatibilidade de tipos C;
+\item controle: \texttt{if}/\texttt{elseif}/\texttt{else}, condição booleana direta, iteração e escopo;
+\item fluxo: cada operador isolado, composições, ordem, erros e expressões entre parênteses;
+\item concorrência: dependências, resultados ordenados, falhas isoladas, cancelamento, encerramento e ausência de deadlock nos casos de teste;
+\item interoperabilidade: cabeçalho ausente, símbolo ausente, ABI incompatível, conversão de strings, memória e exceções Python;
+\item regressão: todo bug corrigido gera caso reproduzível.
+\end{enumerate}
+A especificação só pode ser considerada pronta para implementação estável quando cada produção gramatical e cada regra semântica tiver teste associado ou justificativa explícita.
+\section{Exemplos integrados}
+\subsection{Tipos, textos e comentários}
+\begin{lstlisting}
+@ Exemplo de declaracao tipada @
+idade =: int(20)
+nome =: txt(Maria)
+saudacao =: txt("Ola, " + nome)
+ativo = true
+print(saudacao)
+\end{lstlisting}
+A expressão de concatenação acima depende de uma operação de texto explicitamente definida; a versão normativa deve escolher entre concatenação por \texttt{+} para dois Text ou função própria. A concatenação de texto e número não é implícita.
+\subsection{Iteração por fluxo}
+\begin{lstlisting}
+numeros = [1, 2, 3, 4, 5]
+numeros |> numero |> print(numero)
+\end{lstlisting}
+Este exemplo representa a forma concisa desejada. A gramática final deve definir se a etapa final recebe o elemento como argumento implícito ou exige que a variável seja passada explicitamente; os dois modelos não podem coexistir sem regra clara.
+\subsection{Paralelismo conceitual}
+\begin{lstlisting}
+dados = [1, 2, 3, 4, 5, 6]
+resultados = dados >| processar |<
+print(resultados)
+\end{lstlisting}
+Este exemplo é ilustrativo. A sintaxe final deve especificar a função de processamento, a forma de declarar o grupo de trabalhadores e como o resultado da junção é atribuído. A semântica recomendada preserva a ordem original e aguarda todas as tarefas participantes.
+\subsection{Interoperabilidade conceitual}
+\begin{lstlisting}
+#include <stdio.h>
+Link to "biblioteca_sistema"
+import modulo_python
+\end{lstlisting}
+O exemplo demonstra as três intenções distintas. A sintaxe concreta da diretiva \texttt{\#include}, a resolução do nome após \texttt{Link to} e a integração de módulos Python dependem da implementação e do alvo de plataforma.
+\section{Plano de implementação após congelamento}
+A implementação deve seguir uma sequência que minimize retrabalho:
+\begin{enumerate}
+\item congelar este documento após revisão das ambiguidades explicitamente listadas;
+\item construir lexer independente, com testes de tokens e posições;
+\item implementar parser da GLC e testes de árvore sintática;
+\item implementar resolução de nomes, escopos e tipos;
+\item implementar avaliador sequencial de expressões e controle de fluxo;
+\item implementar classes, módulos e conversões;
+\item implementar runtime de tarefas, estados, cancelamento e junção;
+\item adicionar agentes, mensagens e memória compartilhada;
+\item implementar adaptadores de interoperabilidade C, Python e bibliotecas de sistema;
+\item executar testes de conformidade, benchmarks e testes de estresse;
+\item publicar uma matriz de recursos suportados por plataforma.
+\end{enumerate}
+Não se deve começar pela implementação completa dos operadores paralelos antes de congelar a semântica de valores, efeitos, falhas e dependências. Um protótipo pode explorar opções, mas não deve ser tratado como referência normativa.
+\section{Questões que exigem validação final}
+Antes de declarar a gramática estável, a equipe deve decidir formalmente:
+\begin{enumerate}
+\item se blocos convencionais usarão chaves, indentação ou ambos sob regras distintas;
+\item sintaxe completa de classes, construtores, membros, herança e tipos de retorno;
+\item semântica exata de \texttt{<|}, \texttt{>|} e \texttt{|<}, incluindo a forma concreta de ramificação;
+\item se \texttt{txt(conteúdo sem aspas)} aceita espaços, parênteses aninhados e escapes e como encerra o literal;
+\item se a iteração \texttt{colecao |> elemento |> operação} é uma produção dedicada ou açúcar sintático;
+\item largura e overflow de tipos numéricos por plataforma;
+\item política de propriedade, cópia e compartilhamento de objetos entre tarefas;
+\item versão Python, ABI C, ferramentas de ligação e estratégia de suporte a C++/.NET;
+\item formato e escopo de \texttt{\#include} e \texttt{Link to};
+\item modelo definitivo de exceções, falhas de tarefa e agentes.
+\end{enumerate}
+\section{Conclusão}
+A Pifari tem como eixo a combinação de expressividade, tipos, interoperabilidade e execução concorrente administrada pelo runtime. A qualidade da linguagem dependerá menos da quantidade de símbolos e mais da consistência entre léxico, gramática, tipos, semântica e testes. Esta versão oferece uma especificação de trabalho ampliada e identifica explicitamente o que ainda precisa de validação. Ela não afirma que o interpretador, o runtime ou os adaptadores já existam.
+\end{document}

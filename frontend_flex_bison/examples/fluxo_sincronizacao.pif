@@ -1,0 +1,2 @@
+numeros = [1, 2, 3, 4]
+numeros >| numero >| print(numero) <| print("todas as tarefas terminaram")

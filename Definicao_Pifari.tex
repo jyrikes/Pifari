@@ -1,0 +1,370 @@
+\documentclass[12pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage[brazil]{babel}
+\usepackage{lmodern}
+\usepackage{geometry}
+\geometry{left=3cm,right=2cm,top=3cm,bottom=2cm}
+\usepackage{xcolor}
+\usepackage{listings}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage[hidelinks]{hyperref}
+\setlength{\parindent}{1.25cm}
+\setlength{\parskip}{0.25em}
+\setlist{itemsep=0.2em,topsep=0.3em}
+\definecolor{codebg}{RGB}{247,247,247}
+\definecolor{codecomment}{RGB}{35,110,65}
+\definecolor{codekeyword}{RGB}{35,65,145}
+\lstdefinelanguage{Pifari}{
+  morekeywords={true,false,Null,Int,Float,Bool,Text,List,Map,Set,if,else,while,for,break,continue,return,import,const},
+  sensitive=true,
+  morecomment=[l]{//},
+  morecomment=[s]{/*}{*/},
+  morestring=[b]"
+}
+\lstset{
+  language=Pifari,
+  basicstyle=\ttfamily\small,
+  keywordstyle=\color{codekeyword}\bfseries,
+  commentstyle=\color{codecomment}\itshape,
+  stringstyle=\color{red!60!black},
+  backgroundcolor=\color{codebg},
+  frame=single,
+  rulecolor=\color{black!20},
+  breaklines=true,
+  showstringspaces=false,
+  keepspaces=true,
+  columns=fullflexible,
+  inputencoding=utf8,
+  extendedchars=true,
+  literate=
+   {á}{{\'a}}1 {à}{{\`a}}1 {â}{{\^a}}1 {ã}{{\~a}}1
+   {é}{{\'e}}1 {ê}{{\^e}}1 {í}{{\'i}}1
+   {ó}{{\'o}}1 {ô}{{\^o}}1 {õ}{{\~o}}1
+   {ú}{{\'u}}1 {ü}{{\"u}}1 {ç}{{\c{c}}}1
+   {Á}{{\'A}}1 {À}{{\`A}}1 {Â}{{\^A}}1 {Ã}{{\~A}}1
+   {É}{{\'E}}1 {Ê}{{\^E}}1 {Í}{{\'I}}1
+   {Ó}{{\'O}}1 {Ô}{{\^O}}1 {Õ}{{\~O}}1
+   {Ú}{{\'U}}1 {Ü}{{\"U}}1 {Ç}{{\c{C}}}1
+}
+\title{\textbf{Definição da Linguagem de Programação Pifari}\\
+\large Proposta inicial de especificação}
+\author{Documento de projeto}
+\date{Outubro de 2026}
+\begin{document}
+\maketitle
+\begin{abstract}
+Este documento apresenta uma proposta inicial para a linguagem de programação Pifari, com extensão de arquivo \texttt{.pif}. São descritas sua identidade, funcionalidades pretendidas, tipos de dados, variáveis, operadores, fluxo de controle, entrada e saída, funções, regras léxicas e sintáticas, semântica, diagnóstico de erros e exemplos de programas. Como se trata de um projeto em desenvolvimento, as decisões aqui registradas constituem uma base para discussão, prototipação e validação, e não uma implementação concluída.
+\end{abstract}
+\tableofcontents
+\newpage
+
+\section{Identidade e funcionalidades da linguagem}
+\subsection{Identidade}
+O nome da linguagem é \textbf{Pifari}, e sua extensão de arquivo será \texttt{.pif}. O nome é inspirado no pífano e na tradição musical nordestina. A metáfora é a de diferentes tarefas que executam partes independentes, mas coordenadas, de uma mesma composição.
+
+\subsection{Objetivos e funcionalidades}
+O Pifari é proposto como uma linguagem interpretada que busca tornar a programação paralela e assíncrona mais simples e acessível. Seu runtime deverá identificar oportunidades seguras de execução concorrente, respeitar dependências entre operações e distribuir tarefas de maneira eficiente, sem exigir que o programador gerencie manualmente todos os detalhes da concorrência.
+
+Entre os objetivos do projeto estão:
+\begin{itemize}
+\item inferência de tipos, com possibilidade de anotações explícitas;
+\item sintaxe legível, com expressões que possam produzir valores;
+\item composição de operações por meio do operador \texttt{|>};
+\item paralelismo e assincronia gerenciados pelo runtime quando forem seguros;
+\item recursos de teste integrados ao fluxo de desenvolvimento, favorecendo TDD;
+\item coordenação de agentes inteligentes, APIs, ferramentas e serviços externos;
+\item interoperabilidade com Python para reutilização de bibliotecas existentes.
+\end{itemize}
+
+A proposta também explora uma programação orientada às capacidades dos valores. Por exemplo, um valor booleano pode participar diretamente de uma operação condicional, e um valor iterável pode ser transformado sem exigir sempre um laço explícito. Protocolos ou capacidades como \textit{Boolean}, \textit{Iterable}, \textit{Comparable}, \textit{Composable} e \textit{Async} deverão definir quais operações cada tipo suporta. A sintaxe concreta dessas capacidades ainda precisa ser validada.
+
+O objetivo é oferecer uma linguagem extensível para automação, processamento de dados, sistemas distribuídos e aplicações baseadas em agentes de inteligência artificial. A linguagem permanece em fase de proposta: sintaxe, tipagem, runtime e interoperabilidade deverão ser implementados e avaliados por protótipos e testes.
+
+\section{Definição dos tipos de dados}
+A primeira versão deverá prever os tipos fundamentais abaixo:
+\begin{itemize}
+\item \texttt{Int}: números inteiros, como \texttt{20} e \texttt{-3};
+\item \texttt{Float}: números reais, como \texttt{3.14} e \texttt{-0.5};
+\item \texttt{Bool}: valores lógicos \texttt{true} e \texttt{false};
+\item \texttt{Text}: sequências de caracteres delimitadas por aspas duplas;
+\item \texttt{List[T]}: lista ordenada de valores do tipo \texttt{T};
+\item \texttt{Map[K,V]}: associação entre chaves do tipo \texttt{K} e valores do tipo \texttt{V};
+\item \texttt{Set[T]}: coleção de valores únicos do tipo \texttt{T};
+\item \texttt{Null}: ausência intencional de valor.
+\end{itemize}
+
+A linguagem deverá permitir inferência de tipo a partir do valor inicial, sem impedir anotações explícitas. Inteiros e reais poderão participar da mesma expressão aritmética: quando necessário, um inteiro será convertido para real de maneira segura. A conversão inversa, de real para inteiro, não deverá ocorrer silenciosamente quando puder haver perda da parte fracionária; nesse caso, será exigida conversão explícita.
+
+Textos serão delimitados por aspas duplas. A interpolação permitirá inserir expressões no texto, como em \texttt{"Olá, \{nome\}"}. A operação de somar texto e número não será permitida implicitamente; o programador deverá converter o valor para texto. Coleções deverão preservar a consistência de tipos, com possibilidade de regras mais flexíveis em versões futuras.
+
+\section{Variáveis e declarações}
+A atribuição será feita com \texttt{=}. Por padrão, o tipo será inferido a partir do valor atribuído, e não será obrigatório escrever uma palavra como \texttt{let} para criar uma variável. A anotação de tipo será opcional e utilizará \texttt{:}.
+
+\begin{lstlisting}
+idade = 20
+altura: Float = 1.72
+nome = "Ana"
+ativa = true
+\end{lstlisting}
+
+Uma variável deverá ser definida antes de seu uso. Atribuições posteriores serão permitidas quando compatíveis com o tipo ou com as regras de inferência da variável. Para indicar que uma referência não deve receber novas atribuições, poderá ser usado \texttt{const}:
+
+\begin{lstlisting}
+const limite = 100
+contador = 0
+contador = contador + 1
+\end{lstlisting}
+
+Cada variável terá um escopo definido por seu bloco ou módulo. A reutilização de um nome no mesmo escopo será proibida, salvo se uma regra explícita de sombreamento for adotada futuramente. O uso de identificador inexistente deverá produzir erro semântico claro. Uma variável não poderá ser lida antes de receber um valor válido.
+
+\section{Operadores e expressões}
+\subsection{Operadores previstos}
+\begin{center}
+\begin{tabular}{ll}
+\textbf{Categoria} & \textbf{Operadores}\\
+\hline
+Aritméticos & \texttt{+}, \texttt{-}, \texttt{*}, \texttt{/}, \texttt{//}, \texttt{\%}, \texttt{**}\\
+Relacionais & \texttt{==}, \texttt{!=}, \texttt{<}, \texttt{<=}, \texttt{>}, \texttt{>=}\\
+Lógicos & \texttt{and}, \texttt{or}, \texttt{not}\\
+Atribuição & \texttt{=}\\
+Composição & \texttt{|>}\\
+\end{tabular}
+\end{center}
+
+O operador \texttt{/} produzirá divisão real; \texttt{//} representará divisão inteira; \texttt{\%} calculará o resto; e \texttt{**} representará potenciação. Parênteses poderão ser utilizados para agrupar expressões e alterar a ordem natural de avaliação.
+
+\subsection{Precedência e associatividade}
+Da maior para a menor precedência, a proposta inicial é:
+\begin{enumerate}
+\item parênteses e chamadas de função;
+\item potenciação \texttt{**} (associativa à direita);
+\item multiplicação, divisão, divisão inteira e resto;
+\item adição e subtração;
+\item operadores relacionais;
+\item \texttt{not};
+\item \texttt{and};
+\item \texttt{or};
+\item composição \texttt{|>} e atribuição, conforme regras sintáticas próprias.
+\end{enumerate}
+Operadores aritméticos binários, exceto potenciação, serão associativos à esquerda. A tabela definitiva deverá ser formalizada na gramática.
+
+Assim, \texttt{2 + 3 * 4} resulta em \texttt{14}, pois a multiplicação tem precedência sobre a adição. Já \texttt{(2 + 3) * 4} resulta em \texttt{20}, pois os parênteses determinam que a adição seja calculada primeiro.
+
+\begin{lstlisting}
+resultado_a = 2 + 3 * 4       // resultado_a vale 14
+resultado_b = (2 + 3) * 4     // resultado_b vale 20
+dobro = 5 ** 2
+\end{lstlisting}
+
+\section{Comandos de controle de fluxo}
+O Pifari deverá buscar construções concisas e expressivas. Condições poderão ser expressões que retornam valores, enquanto valores iteráveis poderão ser processados por operações como \texttt{map}, \texttt{filter} e \texttt{reduce}. Isso reduz a necessidade de escrever explicitamente \texttt{if} ou \texttt{for} nos casos mais comuns, sem eliminar estruturas explícitas quando elas tornarem o algoritmo mais claro.
+
+\subsection{Decisões e expressões condicionais}
+A forma convencional de referência será baseada em blocos delimitados por chaves. Uma expressão condicional poderá produzir um valor:
+
+\begin{lstlisting}
+situacao = nota >= 7 {
+    "Aprovado"
+} else {
+    "Reprovado"
+}
+\end{lstlisting}
+
+A linguagem também investigará uma forma de aplicação de comportamento a um booleano, por exemplo \texttt{(idade >= 18) \{ print("Maior de idade") \}}. Essa forma é uma hipótese de sintaxe, não uma regra definitiva. O projeto deverá garantir que condições ambíguas e efeitos colaterais sejam compreensíveis.
+
+Para múltiplas alternativas, poderá ser adotado casamento de padrões em lugar de uma cadeia extensa de condicionais:
+
+\begin{lstlisting}
+mensagem = nota {
+    10      -> "Excelente"
+    7..9    -> "Aprovado"
+    5..6    -> "Recuperação"
+    _       -> "Reprovado"
+}
+\end{lstlisting}
+
+\subsection{Repetição e iteráveis}
+Coleções e outros objetos que implementem a capacidade \textit{Iterable} poderão ser transformados por operações de coleção e composição:
+
+\begin{lstlisting}
+numeros = [1, 2, 3, 4, 5]
+dobrados = numeros |> map(x -> x * 2)
+pares = numeros |> filter(x -> x % 2 == 0)
+soma = numeros |> reduce((acum, x) -> acum + x, 0)
+\end{lstlisting}
+
+O operador \texttt{|>} encaminha o resultado da expressão à operação seguinte, favorecendo leitura da esquerda para a direita. Para situações com estado mutável, repetição até uma condição de parada ou algoritmos complexos, a linguagem poderá manter \texttt{while} e \texttt{for} como construções explícitas de apoio. \texttt{break} interromperá um laço e \texttt{continue} avançará para a próxima iteração. Um bloco será delimitado por \texttt{\{} e \texttt{\}}.
+
+O runtime poderá executar tarefas independentes em paralelo e lidar com operações assíncronas sem exigir marcadores explícitos em todos os pontos. Isso não significa que toda operação será paralela: dependências, efeitos colaterais, recursos compartilhados e determinismo deverão ser respeitados. O modelo de execução precisa definir cancelamento, tratamento de falhas e sincronização.
+
+\section{Entrada e saída de dados}
+A saída padrão será realizada por \texttt{print}, que poderá receber um ou mais valores. A entrada textual poderá ser obtida por \texttt{input}. Conversões explícitas serão oferecidas por funções como \texttt{to\_int}, \texttt{to\_float} e \texttt{to\_text}.
+
+\begin{lstlisting}
+nome = input("Digite seu nome: ")
+print("Olá, ", nome)
+
+texto_idade = input("Digite sua idade: ")
+idade = to_int(texto_idade)
+print("Idade informada: ", idade)
+\end{lstlisting}
+
+A entrada será inicialmente tratada como texto. Conversões inválidas deverão produzir um erro diagnosticável, ou futuramente um valor de resultado que represente sucesso ou falha. A formatação de valores compostos deverá ser consistente e documentada.
+
+\section{Funções e modularização}
+O Pifari terá funções reutilizáveis com parâmetros e valor de retorno. A proposta de sintaxe usa \texttt{:} para introduzir uma definição, parênteses para parâmetros e chaves para o corpo. A última expressão do corpo poderá ser retornada implicitamente; \texttt{return} continuará disponível quando tornar o fluxo mais claro.
+
+\begin{lstlisting}
+somar : (a, b) {
+    a + b
+}
+
+dobrar : (x: Int) -> Int {
+    x * 2
+}
+
+resultado = somar(3, 4)
+\end{lstlisting}
+
+Funções anônimas poderão ser escritas com \texttt{->}, por exemplo \texttt{x -> x * 2}. Módulos permitirão separar código reutilizável:
+
+\begin{lstlisting}
+import matematica
+\end{lstlisting}
+
+A forma de definir tipos compostos ou classes ainda deverá ser especificada. Uma possibilidade em estudo é usar \texttt{:=} para declarar um tipo, separando essa operação da atribuição comum. A interoperabilidade com Python deverá prever chamadas, conversão de valores, propagação de exceções e gerenciamento de recursos. A existência de um ponto de entrada obrigatório, como \texttt{main}, ficará para decisão posterior; na primeira proposta, um arquivo poderá ser executado a partir de suas instruções de nível superior.
+
+\section{Definição das regras léxicas}
+As regras léxicas determinam como os caracteres formam tokens, servindo de base para a implementação de um analisador léxico com Flex.
+
+\subsection{Caracteres e identificadores}
+O código-fonte será texto Unicode codificado em UTF-8. Identificadores começarão por uma letra ASCII ou sublinhado e poderão conter letras, números e sublinhados depois do primeiro caractere. A linguagem diferenciará maiúsculas de minúsculas; portanto, \texttt{idade}, \texttt{Idade} e \texttt{IDADE} serão identificadores distintos. Para facilitar a interoperabilidade, recomenda-se usar letras sem acentos em identificadores na primeira versão.
+
+Exemplos válidos: \texttt{idade}, \texttt{\_total}, \texttt{nota2}, \texttt{calcular\_media}. Exemplos inválidos: \texttt{2nota} (começa por número), \texttt{nome completo} (contém espaço) e \texttt{valor-um} (hífen não permitido em identificador).
+
+\subsection{Literais, operadores e espaços}
+Inteiros serão sequências de dígitos decimais; reais terão parte inteira e parte fracionária separadas por ponto, como \texttt{3.14}. Notação científica poderá ser incluída após a definição da gramática. Textos serão delimitados por aspas duplas, com regras de escape para aspas, barra invertida e quebras de linha.
+
+Os símbolos previstos incluem parênteses, colchetes, chaves, vírgulas, dois-pontos, ponto e operadores descritos na Seção 2.3. Espaços, tabulações e quebras de linha separarão tokens e, em geral, serão ignorados pelo analisador léxico, exceto quando forem relevantes para mensagens de diagnóstico. A primeira versão usará chaves para delimitar blocos e não dependerá da indentação para determinar a estrutura.
+
+\subsection{Palavras reservadas}
+A lista inicial inclui \texttt{true}, \texttt{false}, \texttt{Null}, \texttt{if}, \texttt{else}, \texttt{while}, \texttt{for}, \texttt{break}, \texttt{continue}, \texttt{return}, \texttt{const} e \texttt{import}. Nomes de tipos fundamentais e operadores lógicos também poderão ser tratados como palavras reservadas, decisão a confirmar durante a construção do lexer.
+
+\subsection{Comentários em linha e em múltiplas linhas}
+O Pifari permitirá dois estilos de comentário. O comentário em linha começa com \texttt{//} e termina no final da linha. O comentário em múltiplas linhas começa com \texttt{/*} e termina no primeiro \texttt{*/} correspondente. Comentários serão ignorados pelo analisador léxico e não participarão da execução. Na primeira versão, comentários de múltiplas linhas não serão aninhados.
+
+\begin{lstlisting}
+// Comentario em linha: explica a proxima instrucao.
+idade = 20
+
+/*
+ Comentario em multiplas linhas.
+ Pode ocupar varias linhas e documentar
+ uma decisao ou um trecho de codigo.
+*/
+maior_de_idade = idade >= 18
+\end{lstlisting}
+
+O lexer deverá reconhecer comentários antes de interpretar seus caracteres como operadores. Um comentário de múltiplas linhas sem fechamento deverá gerar diagnóstico léxico indicando a posição em que o comentário começou.
+
+\section{Definição das regras sintáticas}
+A sintaxe especifica como os tokens podem ser combinados em instruções válidas. A proposta inicial é:
+\begin{itemize}
+\item uma instrução simples poderá terminar com quebra de linha; o ponto e vírgula poderá ser aceito como separador opcional;
+\item a atribuição terá a forma \texttt{identificador = expressão};
+\item expressões aceitarão literais, identificadores, chamadas, operadores e agrupamento por parênteses;
+\item blocos serão delimitados por chaves;
+\item instruções poderão conter blocos e outras instruções;
+\item funções terão nome, parâmetros opcionais tipados, corpo e tipo de retorno opcional;
+\item o programa mínimo poderá consistir em um arquivo \texttt{.pif} com zero ou mais instruções válidas.
+\end{itemize}
+
+Exemplo de estrutura condicional convencional:
+
+\begin{lstlisting}
+if (idade >= 18) {
+    print("Maior de idade")
+}
+\end{lstlisting}
+
+Essa forma será mantida como alternativa explícita de controle, mesmo que a linguagem explore expressões condicionais e capacidades dos tipos. A gramática deverá definir como novas linhas separam instruções, como as chamadas são reconhecidas e quais combinações são inválidas. A precedência de operadores será formalizada para evitar ambiguidades.
+
+\section{Definição das regras semânticas}
+As regras semânticas definem o significado de programas sintaticamente válidos. Para a primeira versão, propõem-se as seguintes decisões:
+\begin{itemize}
+\item variável inexistente: erro semântico com indicação do identificador e da posição;
+\item variável sem valor inicial: não poderá ser lida até receber valor;
+\item operações entre tipos incompatíveis: erro, sem conversão implícita arbitrária;
+\item condição booleana: operações condicionais exigirão um valor \texttt{Bool}; outros tipos não serão convertidos automaticamente em verdadeiro ou falso;
+\item divisão por zero: erro de execução com diagnóstico claro;
+\item atribuição incompatível com tipo explícito: erro semântico, quando detectável antes da execução, ou erro de tipo em tempo de execução nos casos dinâmicos;
+\item nome duplicado: proibido no mesmo escopo, salvo regra de sombreamento definida explicitamente;
+\item conversões potencialmente destrutivas: exigirão operação explícita.
+\end{itemize}
+
+O modelo de tipos deverá equilibrar inferência e segurança. A capacidade de um objeto, como ser iterável ou comparável, permitirá definir quais operações podem ser aplicadas a ele. Valores assíncronos deverão ser distinguidos de valores já resolvidos para evitar que um resultado pendente seja tratado incorretamente como um booleano comum.
+
+A execução concorrente deverá preservar dependências de dados e tornar visíveis falhas relevantes. A ordem de conclusão de tarefas independentes poderá variar; quando a ordem afetar o resultado, o programa deverá expressar essa dependência ou utilizar uma operação que imponha ordenação. Essas regras serão refinadas a partir de protótipos.
+
+\section{Erros e mensagens de diagnóstico}
+O interpretador deverá distinguir, no mínimo, erros léxicos, sintáticos, semânticos e de execução. As mensagens deverão indicar o tipo de erro, a linha e a coluna quando disponíveis, além de uma explicação curta. Sempre que possível, a análise continuará após um erro sintático recuperável, para apresentar mais de um problema na mesma execução.
+
+\begin{lstlisting}
+x = 10 + ;
+// Sintatico: expressao incompleta apos o operador +.
+
+if (x > 10 {
+    print(x)
+}
+// Sintatico: falta fechar o parenteses da condicao.
+
+y = variavel_inexistente + 1
+// Semantico: identificador nao declarado.
+\end{lstlisting}
+
+O primeiro exemplo contém uma expressão incompleta e deverá ser rejeitado pelo analisador sintático. O segundo contém delimitadores desbalanceados e também deverá ser rejeitado sintaticamente. No terceiro, a estrutura pode ser sintaticamente válida, mas o nome não declarado deverá ser identificado pela análise semântica. Se o problema só puder ser detectado durante a execução, o interpretador deverá interromper a operação afetada com diagnóstico e evitar continuar em estado inconsistente.
+
+\section{Exemplos de programas}
+Os exemplos seguintes ilustram a sintaxe proposta. São exemplos conceituais e ainda dependem da implementação do interpretador Pifari.
+
+\subsection{Programa 1: cálculo}
+\begin{lstlisting}
+// Calcula a media de tres notas.
+nota1 = 8
+nota2 = 7
+nota3 = 9
+media = (nota1 + nota2 + nota3) / 3
+print("Media: ", media)
+\end{lstlisting}
+O programa soma três notas, divide o resultado por três e exibe a média. O resultado esperado é \texttt{8}.
+
+\subsection{Programa 2: decisão}
+\begin{lstlisting}
+// Classifica o resultado de uma avaliacao.
+nota = 8
+situacao = nota >= 7 {
+    "Aprovado"
+} else {
+    "Reprovado"
+}
+print(situacao)
+\end{lstlisting}
+O programa verifica se a nota é maior ou igual a sete e atribui uma mensagem conforme o resultado. Para a nota igual a oito, a saída esperada é \texttt{Aprovado}.
+
+\subsection{Programa 3: repetição}
+\begin{lstlisting}
+// Soma os inteiros de 1 ate 5.
+numeros = [1, 2, 3, 4, 5]
+soma = numeros |> reduce((acum, x) -> acum + x, 0)
+print("Soma: ", soma)
+\end{lstlisting}
+O programa percorre conceitualmente os elementos da coleção por meio de \texttt{reduce}, acumulando a soma sem escrever um laço explícito. O resultado esperado é \texttt{15}. Esse exemplo demonstra a alternativa baseada em iteráveis; um laço \texttt{for} explícito também poderá ser usado quando for didaticamente necessário.
+
+\section{Conclusão e decisões pendentes}
+Esta especificação reúne uma direção inicial para a identidade, os tipos, as expressões, o fluxo de controle e as regras léxicas, sintáticas e semânticas do Pifari. As escolhas procuram combinar legibilidade, composição funcional e execução concorrente gerenciada pelo runtime.
+
+Antes de uma implementação estável, será necessário definir formalmente a gramática, testar o lexer e o parser, detalhar os protocolos de capacidades, especificar o modelo de concorrência e de erros e verificar a interoperabilidade com Python. As construções inovadoras — em especial a aplicação direta de booleanos, a sintaxe de casamento de padrões e a execução assíncrona implícita — devem ser validadas com protótipos para garantir previsibilidade e facilidade de aprendizagem.
+
+\end{document}

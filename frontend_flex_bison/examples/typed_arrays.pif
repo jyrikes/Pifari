@@ -1,0 +1,32 @@
+valores = f64_array([1, 2, 3.5, 4])
+print(valores)
+print(len(valores))
+print(valores[0])
+print(valores[-1])
+
+alias = valores
+array_set(valores, 1, 20)
+print(alias[1])
+print(valores)
+
+zeros = f64_array(4)
+array_set(zeros, 0, 7)
+array_set(zeros, 1, 8.5)
+array_set(zeros, 2, zeros[0] + zeros[1])
+print(zeros)
+print(len(zeros))
+
+soma = 0
+for x in valores
+    soma = soma + x
+print(soma)
+
+function dobro(x)
+    return x * 2
+
+function soma_tres(x)
+    return x + 3
+
+transformado = map_fused_chain(["dobro", "soma_tres"], valores)
+print(transformado)
+print(transformado[0])

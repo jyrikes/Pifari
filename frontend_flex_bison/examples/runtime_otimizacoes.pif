@@ -1,0 +1,8 @@
+@ Testes de otimizações: folding constante, concatenação e indexação aninhada.
+valores = [1, 2] + [3, 4]
+matriz = [[10, 20], [30, 40]]
+print(2 + 3 * 4)
+print((2 + 3) * 4)
+print(valores)
+print(matriz[0][1])
+print(matriz[-1][-1])

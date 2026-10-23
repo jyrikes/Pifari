@@ -1,0 +1,27 @@
+function dobro(x)
+    return x * 2
+
+function soma_tres(x)
+    return x + 3
+
+function identidade(x)
+    return x
+
+N = 20000
+range(N) >| x >| identidade(x) |< dados
+inicio = agora_ns()
+dados >| x >| dobro(x) |< etapa1
+etapa1 >| x >| soma_tres(x) |< sequencial
+fim = agora_ns()
+print("sequencial_ns", fim - inicio)
+print("sequencial_len", len(sequencial))
+inicio = agora_ns()
+fundido = map_fused_chain(["dobro", "soma_tres"], dados)
+fim = agora_ns()
+print("fundido_ns_inclui_compilacao", fim - inicio)
+inicio = agora_ns()
+fundido = map_fused_chain(["dobro", "soma_tres"], dados)
+fim = agora_ns()
+print("fundido_ns_aquecido", fim - inicio)
+print("fundido_len", len(fundido))
+print("primeiro", fundido[0], "ultimo", fundido[-1])

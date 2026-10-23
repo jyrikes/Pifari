@@ -1,0 +1,27 @@
+N = 500000
+fontes = range(N)
+
+escalar : (x) {
+    x * 1.0001 + 3
+}
+
+misturar : (x) {
+    (x * 1.25 - 7) / 1.1
+}
+
+ativar : (x) {
+    x * x / (x * x + 1)
+}
+
+@ Fluxo sequencial: cada elemento e impresso pela etapa final.
+range(8) |> x |> print(escalar(x))
+
+@ Processamento paralelo em 500 mil elementos.
+fontes >| x >| escalar(x) |< etapa1
+etapa1 >| x >| misturar(x) |< etapa2
+etapa2 >| x >| ativar(x) |< resultado
+
+print("quantidade", len(resultado))
+print("primeiro", resultado[0])
+print("meio", resultado[250000])
+print("ultimo", resultado[-1])

@@ -1,0 +1,16 @@
+function dobro(x)
+    return x * 2
+
+function soma_tres(x)
+    return x + 3
+
+function quadrado(x)
+    return x * x
+
+dados = [1, 2, 3, 4, 5]
+etapas = dados >| x >| dobro(x)
+etapas >| x >| soma_tres(x) |< sequencial
+fundido = map_fused_chain(["dobro", "soma_tres"], dados)
+print(sequencial)
+print(fundido)
+print(map_fused_chain(["dobro", "soma_tres", "quadrado"], dados))

@@ -1,0 +1,8 @@
+function transformar(x)
+    return (x * 2 + 1) * 3 - 4
+
+valores = [1, 2, 3, 4, 5]
+print(map_fused(transformar, valores))
+print(map_fused(transformar, valores, 2))
+resultados = valores >| valor >| transformar(valor)
+print(resultados)

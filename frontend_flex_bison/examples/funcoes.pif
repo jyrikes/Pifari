@@ -1,0 +1,18 @@
+function soma(a, b)
+    return a + b
+
+function dobro(x)
+    return soma(x, x)
+
+print(soma(2, 3))
+print(dobro(8))
+valores = [1, 2, 3, 4]
+valores >| valor >| print(dobro(valor))
+
+function fatorial(n)
+    if n <= 1
+        return 1
+    else
+        return n * fatorial(n - 1)
+
+print(fatorial(5))

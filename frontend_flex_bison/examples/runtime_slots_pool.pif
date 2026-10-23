@@ -1,0 +1,21 @@
+@ Valida slots locais, recursao de funcoes e reutilizacao do pool.
+x = 100
+function soma_ate(n)
+    total = 0
+    for i in range(n)
+        total = total + i
+    return total
+
+function ultimo_indice(n)
+    for i in range(n)
+        total = i
+    return i
+
+print(soma_ate(5))
+print(ultimo_indice(5))
+print(x)
+valores = [1, 2, 3, 4]
+valores >| n >| soma_ate(n) |< primeiro
+valores >| n >| soma_ate(n) |< segundo
+print(primeiro)
+print(segundo)

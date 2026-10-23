@@ -1,0 +1,6 @@
+numeros = [1, 2, 3, 4]
+soma : (x){
+    x*2
+}
+numeros >| numero >| soma(numero) |< resultados
+print(resultados)

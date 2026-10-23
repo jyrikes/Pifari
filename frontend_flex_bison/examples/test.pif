@@ -1,0 +1,90 @@
+
+@ ===== 1. Variáveis e tipos =====@
+idade =: int(20)
+altura =: float("1.75")
+nome = "Yngrid"
+ativo = true
+vazio = "Null"
+
+print("Nome:", nome)
+print("Idade:", idade)
+print("Altura:", altura)
+print("Ativo:", ativo)
+print("Nulo:", vazio)
+
+
+
+@ ===== 3. Operadores aritméticos =====@
+a = 7
+b = 3
+
+print(a + b)
+print(a - b)
+print(a * b)
+print(a / b)
+print(a // b)
+print(a % b)
+print(a ** b)
+print(-a)
+
+@ ===== 4. Comparações e lógica =====@
+print(a > b)
+print(a >= b)
+print(a < b)
+print(a <= b)
+print(a == b)
+print(a != b)
+print(true and false)
+print(true or false)
+print(not false)
+
+@ ===== 5. Condicionais =====@
+if idade >= 18
+    print("Maior de idade")
+else
+    print("Menor de idade")
+
+@ ===== 6. Listas e índices =====@
+numeros = [10, 20, 30, 40]
+print(numeros)
+print(numeros[0])
+print(numeros[2])
+print(numeros[-1])
+print(len(numeros))
+
+@ ===== 7. Laço for =====
+for numero in numeros
+    print(numero)
+
+for letra in "Pifari"
+    print(letra)
+
+@ ===== 8. Funções e retorno explícito =====
+function soma(x, y)
+    return x + y
+
+function dobro(x)
+    return soma(x, x)
+
+print(soma(10, 5))
+print(dobro(21))
+
+@ ===== 9. Função com retorno implícito =====
+triplo : (x) {
+    x * 3
+}
+
+print(triplo(7))
+
+@ ===== 10. Fluxo sequencial =====
+numeros |> numero |> print(numero)
+
+@ ===== 11. Fluxo paralelo =====
+numeros >| numero >| print(dobro(numero))
+
+@ ===== 12. Coleta de resultados paralelos =====
+numeros >| numero >| dobro(numero) |< resultados
+print("Resultados:", resultados)
+
+@ ===== 13. Barreira de sincronização =====
+numeros >| numero >| print(numero) <| print("Todas as tarefas terminaram")

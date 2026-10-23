@@ -1,0 +1,25 @@
+@ Benchmark de CPU: soma de quadrados em quatro tarefas
+@ range(n) produz a lista de 0 até n-1.
+@ O algoritmo é igual ao usado no benchmark Python.
+
+entradas = [200000, 200000, 200000, 200000]
+
+function soma_quadrados(limite)
+    total = 0
+    for i in range(limite)
+        total = total + i * i
+    return total
+
+print("=== PIFARI: SEQUENCIAL ===")
+inicio = agora_ns()
+for n in entradas
+    soma_quadrados(n)
+tempo_seq = (agora_ns() - inicio) / 1000000
+print("Tempo sequencial (ms):", tempo_seq)
+
+print("=== PIFARI: PARALELO ===")
+inicio = agora_ns()
+entradas >| n >| soma_quadrados(n) |< resultados
+tempo_par = (agora_ns() - inicio) / 1000000
+print("Tempo paralelo (ms):", tempo_par)
+print("Resultados:", resultados)

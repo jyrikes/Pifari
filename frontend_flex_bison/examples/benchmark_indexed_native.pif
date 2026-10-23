@@ -1,0 +1,28 @@
+function transformar(A, i)
+    return A[i] * 2 + 3
+
+N = 50000
+dados = f64_array(range(N))
+
+inicio = agora_ns()
+aquecimento = map_indexed_native("transformar", dados)
+fim = agora_ns()
+print("cold_ns", fim - inicio)
+inicio = agora_ns()
+nativo = map_indexed_native("transformar", dados)
+fim = agora_ns()
+print("native_ns", fim - inicio)
+
+interpretado = f64_array(N)
+inicio = agora_ns()
+for i in range(N)
+    array_set(interpretado, i, dados[i] * 2 + 3)
+fim = agora_ns()
+print("interpreted_ns", fim - inicio)
+print("length", len(nativo))
+print("first", nativo[0])
+print("last", nativo[-1])
+print("same", nativo[0] == interpretado[0] and nativo[N - 1] == interpretado[N - 1])
+paralelo = map_indexed_native("transformar", dados, 4)
+print("parallel_first", paralelo[0])
+print("parallel_last", paralelo[-1])
