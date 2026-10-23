@@ -259,3 +259,41 @@ print(resultado[-1])
 O kernel e o IR indexado são cacheados na definição da função durante a execução. O primeiro uso inclui a compilação nativa; chamadas seguintes reutilizam o kernel. Por segurança e previsibilidade, o subset atual só aceita `A[i]` com o nome exato dos dois parâmetros e expressões aritméticas puras (`+`, `-`, `*`, `/`, unário `-`). Acesso com offsets (`A[i+1]`), múltiplos arrays, escritas indexadas dentro do kernel, efeitos colaterais e indexação de arrays multidimensionais ainda não fazem parte desse JIT.
 
 Para comparar com Python sem incluir o tempo de inicialização do processo nos tempos internos de Pifari, execute `python3 examples/benchmark_indexed_vs_python.py`. O script mede o kernel Pifari aquecido, o loop interpretado Pifari e duas variantes Python com o mesmo cálculo `out[i] = data[i] * 2 + 3`, valida resultados e reporta medianas.
+
+---
+
+## Atribuição indexada direta (`A[i] = valor` e `A[i][j] = valor`)
+
+A gramática e o runtime agora suportam atribuição direta por índice tanto em `f64_array` quanto em listas 1D e matrizes aninhadas (`A[i][j] = valor`), sem adicionar novos conflitos shift/reduce ao parser (`%expect 7`):
+
+```pif
+zeros = f64_array(4)
+zeros[0] = 7
+zeros[1] = 8.5
+zeros[2] = zeros[0] + zeros[1]
+zeros[3] = zeros[2] + 4.5
+print(zeros)
+```
+
+---
+
+## Plataforma de Orquestração Multiagente e MCP Gateway (Novo)
+
+O runtime inclui uma plataforma modular em C (`backend/agent_runtime.[ch]` e `backend/mcp_gateway.[ch]`) com 7 subsistemas integrados:
+
+1. **Task Engine & DAG Paralelo:** `Task(id, agent_id, server_id, tool_name, args_json, output_ctx_key, priority, timeout_ms)`, `task_add_dep(task_id, dep_id)`, `task_cancel(task_id, motivo)`, `task_status(task_id)`, `task_result(task_id)` e `dag_run(max_parallel)`.
+2. **Agent Manager:** `Agent(id, role, goal, adapter, max_concurrency, timeout_ms)`.
+3. **MCP Gateway (`stdio` e `http` JSON-RPC 2.0, protocolo `2025-03-26`):** `mcp_register`, `mcp_discover_tools`, `mcp_discover_resources`, `mcp_read_resource` e `mcp_call`.
+4. **Context Store (compartilhado, versionado e com interpolação `{{ctx:chave}}`):** `ctx_put` e `ctx_get`.
+5. **Policy Engine (Default-Deny e separação leitura vs. efeito colateral):** `policy_allow(agent_id, server_id, tool_name, allow_side_effects)`.
+6. **Artifact Manager (persistência com checksum FNV-1a 64-bit):** `artifact_save(id, path, content, agent_id, task_id)`.
+7. **Telemetry Engine & Observabilidade:** `telemetry_progress()`, `telemetry_export(path)` e painel visual em `dashboard/index.html`.
+
+### Documentação Técnica Adicional
+
+- [docs/STATUS_REAL.md](docs/STATUS_REAL.md) — Diagnóstico arquitetural completo do compilador e runtime.
+- [docs/ROADMAP_AGENT_RUNTIME.md](docs/ROADMAP_AGENT_RUNTIME.md) — Plano incremental priorizado por impacto, risco e esforço.
+- [docs/ARQUITETURA_AGENT_RUNTIME.md](docs/ARQUITETURA_AGENT_RUNTIME.md) — Especificação dos 7 módulos e integração MCP.
+- [docs/PLANO_TESTES_MCP.md](docs/PLANO_TESTES_MCP.md) — Matriz de cobertura de testes unitários e de integração MCP.
+- [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — Resultados comparativos medidos antes e depois das otimizações.
+

@@ -44,7 +44,25 @@ lines: %empty {$$=node_new("Statements",NULL,@$.first_line,@$.first_column);}
 statement: simple_statement {$$=$1;} | compound_statement {$$=$1;};
 simple_statement:
  TYPED_DECL IDENTIFIER type_expr {$$=node_pair("Attribute",$2,$3,NULL,@1.first_line,@1.first_column);free($2);}
- | IDENTIFIER ASSIGN expr {$$=node_pair("Assign",$1,$3,NULL,@1.first_line,@1.first_column);free($1);}
+ | expr ASSIGN expr {
+   if($1&&!strcmp($1->kind,"Name")){
+     $$=node_pair("Assign",$1->value,$3,NULL,@1.first_line,@1.first_column);
+     node_free($1);
+   } else if($1&&!strcmp($1->kind,"Index")&&$1->count==2&&$1->children[0]&&!strcmp($1->children[0]->kind,"Name")){
+     $$=node_pair("IndexAssign",$1->children[0]->value,$1->children[1],$3,@1.first_line,@1.first_column);
+     $1->children[1]=NULL;
+     node_free($1);
+   } else if($1&&!strcmp($1->kind,"Index")&&$1->count==2){
+     Node *n=node_new("IndexAssignNested",NULL,@1.first_line,@1.first_column);
+     node_add(n,$1->children[0]);node_add(n,$1->children[1]);node_add(n,$3);
+     $1->children[0]=NULL;$1->children[1]=NULL;
+     node_free($1);
+     $$=n;
+   } else {
+     yyerror("lado esquerdo de '=' deve ser identificador ou elemento indexado");
+     node_free($1);node_free($3);YYERROR;
+   }
+ }
  | IDENTIFIER TYPED_DECL type_expr {$$=node_pair("TypedDecl",$1,$3,NULL,@1.first_line,@1.first_column);free($1);}
  | IDENTIFIER TYPED_DECL type_expr LPAREN optional_expr RPAREN {$$=node_pair("TypedDecl",$1,$3,$5,@1.first_line,@1.first_column);free($1);}
  | RETURN NEWLINE {$$=node_new("Return",NULL,@1.first_line,@1.first_column);}

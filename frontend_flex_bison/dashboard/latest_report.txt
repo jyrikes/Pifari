@@ -1,0 +1,1 @@
+RELATORIO_CONSOLIDADO | Coleta=[dataset=sensor_alpha;samples=4;values=[12.5,18.0,24.5,31.0];checksum=OK] | Analise=[analysis_for=(sensor_alpha_window);mean=21.50;max=31.00;anomaly=false;confidence=0.99] | Status=VERIFICADO

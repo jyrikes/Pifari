@@ -9,7 +9,7 @@ typedef enum {
  PIFARI_OP_FLOORDIV, PIFARI_OP_MOD, PIFARI_OP_POW, PIFARI_OP_EQ, PIFARI_OP_NE,
  PIFARI_OP_LT, PIFARI_OP_LE, PIFARI_OP_GT, PIFARI_OP_GE, PIFARI_OP_AND, PIFARI_OP_OR
 } PifariOp;
-typedef enum { BC_INT, BC_FLOAT, BC_LOAD, BC_LOAD_SLOT, BC_NEG, BC_ADD, BC_SUB, BC_MUL, BC_DIV, BC_IDIV, BC_MOD, BC_POW, BC_STORE_SLOT, BC_RANGE_BEGIN, BC_RANGE_TEST, BC_INC_SLOT, BC_JUMP, BC_RETURN, BC_POP, BC_MADD_SLOTS, BC_EQ, BC_NE, BC_LT, BC_LE, BC_GT, BC_GE, BC_INDEX } ByteOp;
+typedef enum { BC_INT, BC_FLOAT, BC_LOAD, BC_LOAD_SLOT, BC_NEG, BC_EXP, BC_ADD, BC_SUB, BC_MUL, BC_DIV, BC_IDIV, BC_MOD, BC_POW, BC_STORE_SLOT, BC_RANGE_BEGIN, BC_RANGE_TEST, BC_INC_SLOT, BC_JUMP, BC_RETURN, BC_POP, BC_MADD_SLOTS, BC_EQ, BC_NE, BC_LT, BC_LE, BC_GT, BC_GE, BC_INDEX } ByteOp;
 typedef struct { ByteOp op; long long i; double f; const char *name; const struct Node *slot_owner; size_t target, alternate; } ByteInstr;
 typedef struct Node {
  char *kind,*value; struct Node **children; size_t count,capacity; int line,column;

@@ -1,0 +1,65 @@
+@ Prototipo Vertical Multiagente & MCP do Pifari
+@ Demonstra:
+@ 1. MCP Gateway (stdio JSON-RPC 2.0, descoberta de ferramentas e recursos)
+@ 2. 3 Agentes com papeis distintos (Coletor, Analista, Relator)
+@ 3. Policy Engine (default-deny + bloqueio de ferramenta restrita)
+@ 4. Task Engine & DAG Paralelo (2 tarefas independentes em paralelo + 1 tarefa dependente)
+@ 5. Context Store (passagem estruturada e versionada de resultados entre agentes)
+@ 6. Cancelamento por timeout de tarefa lenta
+@ 7. Artifact Manager (checksum FNV-1a) e Telemetry Engine (JSON persistido)
+
+ok_srv = mcp_register("mcp_lab", "stdio", "python3 tests/mock_mcp_server.py", 2000, 4)
+num_tools = mcp_discover_tools("mcp_lab")
+num_res = mcp_discover_resources("mcp_lab")
+spec = mcp_read_resource("mcp_lab", "resource://pifari/runtime_spec")
+
+print("MCP conectado:", ok_srv, "tools:", num_tools, "resources:", num_res)
+print("Recurso MCP:", spec)
+
+@ Registro dos 3 agentes com papeis e limites proprios
+a1 = Agent("ag_coletor", "Coletor Cientifico", "Coletar series temporais do MCP", "local-deterministic", 2, 1500)
+a2 = Agent("ag_analista", "Analista Estatistico", "Extrair metricas e validar anomalias", "local-deterministic", 2, 1500)
+a3 = Agent("ag_relator", "Relator Executivo", "Consolidar artefato final auditavel", "local-deterministic", 1, 1500)
+
+@ Permissoes explicitas no Policy Engine (default-deny)
+policy_allow("ag_coletor", "mcp_lab", "collect_dataset", false)
+policy_allow("ag_coletor", "mcp_lab", "slow_op", false)
+policy_allow("ag_analista", "mcp_lab", "analyze_series", false)
+policy_allow("ag_relator", "mcp_lab", "build_report", false)
+
+@ Teste de bloqueio de seguranca pelo Policy Engine
+bloqueio = mcp_call("ag_coletor", "mcp_lab", "restricted_op", "{}")
+print("Teste Policy Engine (esperado ERR_POLICY_DENIED):", bloqueio)
+
+@ Contexto inicial compartilhado
+v_ctx = ctx_put("missao.escopo", "Telemetria Pifari Multiagente", "ag_coletor", "bootstrap")
+
+@ Tarefas independentes que executam em paralelo no DAG
+Task("t_coleta_paralela", "ag_coletor", "mcp_lab", "collect_dataset", '{"source":"sensor_alpha"}', "coleta.dados", 10, 1500)
+Task("t_analise_paralela", "ag_analista", "mcp_lab", "analyze_series", '{"dataset":"sensor_alpha_window"}', "analise.metricas", 10, 1500)
+
+@ Tarefa dependente que aguarda a conclusao das duas tarefas paralelas acima
+Task("t_sintese_dependente", "ag_relator", "mcp_lab", "build_report", '{"collector_summary":"{{ctx:coleta.dados}}","analysis_summary":"{{ctx:analise.metricas}}"}', "relatorio.final", 5, 1500)
+task_add_dep("t_sintese_dependente", "t_coleta_paralela")
+task_add_dep("t_sintese_dependente", "t_analise_paralela")
+
+@ Tarefa lenta com timeout curto (80ms para operacao de 350ms) para validar cancelamento
+Task("t_lenta_cancelada", "ag_coletor", "mcp_lab", "slow_op", '{"delay_ms":350}', "", 1, 80)
+
+@ Executa o grafo de tarefas (DAG) com ate 2 workers paralelos
+concluidas = dag_run(2)
+print("Tarefas concluidas com sucesso no DAG:", concluidas)
+print("Status t_coleta_paralela:", task_status("t_coleta_paralela"))
+print("Status t_analise_paralela:", task_status("t_analise_paralela"))
+print("Status t_sintese_dependente:", task_status("t_sintese_dependente"))
+print("Status t_lenta_cancelada:", task_status("t_lenta_cancelada"))
+
+relatorio = ctx_get("relatorio.final")
+print("Resultado no Context Store:", relatorio)
+
+@ Persistencia de artefato e relatorio de telemetria
+checksum = artifact_save("art_relatorio_executivo", "dashboard/latest_report.txt", relatorio, "ag_relator", "t_sintese_dependente")
+print("Artefato salvo com checksum FNV-1a:", checksum)
+print("Progresso final da missao (%):", telemetry_progress())
+ok_tel = telemetry_export("dashboard/telemetry_latest.json")
+print("Telemetria JSON exportada:", ok_tel)

@@ -2,6 +2,7 @@
 #include "native_kernel.h"
 
 #include <dlfcn.h>
+#include <errno.h>
 #include <math.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -115,31 +116,68 @@ int pifari_native_kernel_create(const PifariExprGraph *graph,
             "    output[i]=v%d;\n  }\n  return 0;\n}\n", graph->root);
     if (failed) { free(source); return -1; }
 
-    char directory[] = "/tmp/pifari_native_XXXXXX";
-    if (!mkdtemp(directory)) { free(source); return -1; }
-    char source_path[256], library_path[256], command[768];
-    snprintf(source_path, sizeof(source_path), "%s/kernel.c", directory);
-    snprintf(library_path, sizeof(library_path), "%s/kernel.so", directory);
+    char cache_dir[128], cache_path[256];
+    snprintf(cache_dir, sizeof(cache_dir), "/tmp/pifari_kernel_cache_%lu",
+             (unsigned long)getuid());
+    int cache_ok = (mkdir(cache_dir, 0700) == 0 || errno == EEXIST);
+    if (cache_ok) {
+        struct stat st;
+        if (stat(cache_dir, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != getuid())
+            cache_ok = 0;
+        else
+            (void)chmod(cache_dir, 0700);
+    }
+    uint64_t hash = UINT64_C(1469598103934665603);
+    for (size_t i = 0; i < used; ++i) {
+        hash ^= (unsigned char)source[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    snprintf(cache_path, sizeof(cache_path), "%s/%016llx.so",
+             cache_dir, (unsigned long long)hash);
 
-    FILE *file = fopen(source_path, "wb");
-    if (!file) { free(source); rmdir(directory); return -1; }
-    size_t written = fwrite(source, 1, used, file);
-    int close_status = fclose(file);
+    void *handle = NULL;
+    if (cache_ok && getenv("PIFARI_DISABLE_KERNEL_CACHE") == NULL &&
+        access(cache_path, R_OK) == 0) {
+        handle = dlopen(cache_path, RTLD_NOW | RTLD_LOCAL);
+    }
+
+    if (!handle) {
+        char directory[] = "/tmp/pifari_native_XXXXXX";
+        if (!mkdtemp(directory)) { free(source); return -1; }
+        char source_path[256], library_path[256], command[768];
+        snprintf(source_path, sizeof(source_path), "%s/kernel.c", directory);
+        snprintf(library_path, sizeof(library_path), "%s/kernel.so", directory);
+
+        FILE *file = fopen(source_path, "wb");
+        if (!file) { free(source); rmdir(directory); return -1; }
+        size_t written = fwrite(source, 1, used, file);
+        int close_status = fclose(file);
+        if (written != used || close_status != 0) {
+            free(source);
+            unlink(source_path); rmdir(directory); return -1;
+        }
+
+        int command_length = snprintf(command, sizeof(command),
+            "gcc -std=c11 -O3 -march=native -fPIC -shared -o %s %s 2>/dev/null",
+            library_path, source_path);
+        int sys_rc = (command_length < 0 || (size_t)command_length >= sizeof(command))
+            ? -1 : system(command);
+        unlink(source_path);
+        if (sys_rc != 0) {
+            free(source);
+            unlink(library_path); rmdir(directory); return -1;
+        }
+
+        if (cache_ok && rename(library_path, cache_path) == 0) {
+            rmdir(directory);
+            handle = dlopen(cache_path, RTLD_NOW | RTLD_LOCAL);
+        } else {
+            handle = dlopen(library_path, RTLD_NOW | RTLD_LOCAL);
+            unlink(library_path);
+            rmdir(directory);
+        }
+    }
     free(source);
-    if (written != used || close_status != 0) {
-        unlink(source_path); rmdir(directory); return -1;
-    }
-
-    int command_length = snprintf(command, sizeof(command),
-        "gcc -std=c11 -O3 -march=native -fPIC -shared -o %s %s 2>/dev/null",
-        library_path, source_path);
-    if (command_length < 0 || (size_t)command_length >= sizeof(command) ||
-        system(command) != 0) {
-        unlink(source_path); unlink(library_path); rmdir(directory); return -1;
-    }
-
-    void *handle = dlopen(library_path, RTLD_NOW | RTLD_LOCAL);
-    unlink(source_path); unlink(library_path); rmdir(directory);
     if (!handle) return -1;
 
     void *symbol = dlsym(handle, "pifari_native_map");

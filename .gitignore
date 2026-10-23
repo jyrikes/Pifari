@@ -1,0 +1,14 @@
+frontend_flex_bison/pifari
+frontend_flex_bison/test_optimizer
+frontend_flex_bison/test_ast_ir
+frontend_flex_bison/test_dirac
+frontend_flex_bison/test_native_kernel
+frontend_flex_bison/test_agent_runtime
+frontend_flex_bison/parser.tab.c
+frontend_flex_bison/parser.tab.h
+frontend_flex_bison/parser.output
+frontend_flex_bison/lex.yy.c
+frontend_flex_bison/frontend/*.o
+frontend_flex_bison/backend/*.o
+__pycache__/
+*.pyc

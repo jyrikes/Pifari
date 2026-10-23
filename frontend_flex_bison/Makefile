@@ -12,8 +12,12 @@ frontend/parser.o: parser.tab.c frontend/ast.h backend/runtime.h
 	$(CC) $(CFLAGS) -pthread -c parser.tab.c -o $@
 frontend/lexer.o: lex.yy.c frontend/ast.h
 	$(CC) $(CFLAGS) -pthread -c lex.yy.c -o $@
-backend/runtime.o: backend/runtime.c backend/runtime.h backend/operator_engine.h backend/ast_ir.h backend/numeric_buffer.h backend/native_kernel.h frontend/ast.h
+backend/runtime.o: backend/runtime.c backend/runtime.h backend/operator_engine.h backend/ast_ir.h backend/numeric_buffer.h backend/native_kernel.h backend/agent_runtime.h backend/mcp_gateway.h frontend/ast.h
 	$(CC) $(CFLAGS) -pthread -c backend/runtime.c -o $@
+backend/mcp_gateway.o: backend/mcp_gateway.c backend/mcp_gateway.h
+	$(CC) $(CFLAGS) -pthread -c $< -o $@
+backend/agent_runtime.o: backend/agent_runtime.c backend/agent_runtime.h backend/mcp_gateway.h
+	$(CC) $(CFLAGS) -pthread -c $< -o $@
 backend/optimizer.o: backend/optimizer.c backend/optimizer.h
 	$(CC) $(CFLAGS) -c $< -o $@
 backend/ast_ir.o: backend/ast_ir.c backend/ast_ir.h backend/optimizer.h frontend/ast.h
@@ -30,7 +34,7 @@ backend/memory_plan.o: backend/memory_plan.c backend/memory_plan.h
 	$(CC) $(CFLAGS) -c $< -o $@
 backend/reversible.o: backend/reversible.c backend/reversible.h
 	$(CC) $(CFLAGS) -c $< -o $@
-pifari: frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o
+pifari: frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/agent_runtime.o
 	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm -ldl
 test_optimizer: tests/test_optimizer.c backend/optimizer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o
 	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm
@@ -40,11 +44,14 @@ test_dirac: tests/test_dirac.c backend/dirac.o
 	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm
 test_native_kernel: tests/test_native_kernel.c backend/native_kernel.o backend/optimizer.o
 	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm -ldl
-test: pifari test_optimizer test_ast_ir test_dirac test_native_kernel
+test_agent_runtime: tests/test_agent_runtime.c backend/agent_runtime.o backend/mcp_gateway.o
+	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm
+test: pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent_runtime
 	./test_optimizer
 	./test_ast_ir
 	./test_dirac
 	./test_native_kernel
+	./test_agent_runtime
 	./pifari examples/runtime_map_fused.pif
 	./pifari examples/runtime_fusion.pif
 	./pifari examples/runtime_numeric_tools.pif
@@ -70,6 +77,7 @@ test: pifari test_optimizer test_ast_ir test_dirac test_native_kernel
 	./pifari examples/paralelismo_assincrono.pif
 	./pifari examples/mlp_xor.pif
 	./pifari examples/mlp_xor_fluxo.pif
+	./pifari examples/prototipo_multiagente_mcp.pif
 test-fuzz: pifari
 	python3 tests/fuzz_parser.py
 benchmark: pifari
@@ -80,4 +88,4 @@ benchmark: pifari
 	python3 examples/benchmark_mlp_xor.py
 	./pifari examples/carga_fluxo_puro.pif
 clean:
-	rm -f pifari test_optimizer test_ast_ir test_dirac test_native_kernel parser.tab.c parser.tab.h lex.yy.c parser.output frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o
+	rm -f pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent_runtime parser.tab.c parser.tab.h lex.yy.c parser.output frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/agent_runtime.o
