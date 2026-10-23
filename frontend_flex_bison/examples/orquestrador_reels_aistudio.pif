@@ -1,0 +1,49 @@
+@ Orquestrador Multiagente Pifari para Criacao de Videos de Reels (9:16)
+@ Coordena 2 Servidores MCP em paralelo:
+@   1) srv_pifari: Servidor MCP Nativo Pifari (calculo F64 de ritmo/quadros em < 2 ms)
+@   2) srv_reels:  Servidor MCP Google AI Studio (Gemini Free Tier + Prompts Veo 2 9:16 + FFmpeg)
+
+ok_pif = mcp_register("srv_pifari", "stdio", "./pifari examples/servidor_mcp_pifari.pif", 5000, 4)
+ok_ai = mcp_register("srv_reels", "stdio", "python3 examples/servidor_mcp_aistudio_reels.py", 10000, 4)
+
+nt_pif = mcp_discover_tools("srv_pifari")
+nt_ai = mcp_discover_tools("srv_reels")
+nr_ai = mcp_discover_resources("srv_reels")
+cfg_ai = mcp_read_resource("srv_reels", "resource://aistudio/reels_config")
+
+print("MCP Pifari Nativo tools:", nt_pif, "| MCP AI Studio Reels tools:", nt_ai)
+print("Config AI Studio Reels:", cfg_ai)
+
+@ Registro dos 3 agentes especializados do estudio de Reels
+Agent("ag_roteirista", "Roteirista Viral Reels", "Criar roteiro 9:16 com gancho de 3s via Gemini AI Studio", "gemini-2.5-flash", 2, 8000)
+Agent("ag_diretor_veo", "Diretor de Video Veo 2", "Converter roteiro em cenas 9:16 (1080x1920) para o Google Veo", "veo-2.0", 2, 8000)
+Agent("ag_eng_video", "Engenheiro de Pacing e Render", "Calcular curva de quadros F64 no Pifari e montar pacote FFmpeg", "local-deterministic", 2, 8000)
+
+@ Permissoes explicitas no Policy Engine (menor privilegio)
+policy_allow("ag_roteirista", "srv_reels", "gerar_roteiro_reel", false)
+policy_allow("ag_diretor_veo", "srv_reels", "gerar_prompts_veo_vertical", false)
+policy_allow("ag_eng_video", "srv_pifari", "processar_vetor_f64", false)
+policy_allow("ag_eng_video", "srv_reels", "gerar_pacote_render_ffmpeg", false)
+
+@ Grafo de Tarefas (DAG):
+@ t_roteiro (AI Studio) e t_ritmo_fps (Pifari Nativo) rodam em PARALELO!
+Task("t_roteiro", "ag_roteirista", "srv_reels", "gerar_roteiro_reel", '{"tema":"Como criar Agentes MCP 100x mais rapidos","duracao_seg":15}', "roteiro", 10, 8000)
+Task("t_ritmo_fps", "ag_eng_video", "srv_pifari", "processar_vetor_f64", '{"tamanho":36000}', "metricas_fps", 10, 5000)
+
+@ t_prompts_veo depende do roteiro pronto
+Task("t_prompts_veo", "ag_diretor_veo", "srv_reels", "gerar_prompts_veo_vertical", '{"roteiro":"{{ctx:roteiro}}"}', "veo", 8, 8000)
+task_add_dep("t_prompts_veo", "t_roteiro")
+
+@ t_pacote_final consolida roteiro + prompts Veo 9:16 + curva de quadros calculada no Pifari
+Task("t_pacote_final", "ag_eng_video", "srv_reels", "gerar_pacote_render_ffmpeg", '{"roteiro":"{{ctx:roteiro}}","prompts_veo":"{{ctx:veo}}","metricas_fps":"{{ctx:metricas_fps}}"}', "pacote_reel", 5, 8000)
+task_add_dep("t_pacote_final", "t_prompts_veo")
+task_add_dep("t_pacote_final", "t_ritmo_fps")
+
+concluidas = dag_run(2)
+print("Tarefas do estudio de Reels concluidas:", concluidas)
+print("Roteiro gerado:", ctx_get("roteiro"))
+print("Prompts Google Veo (9:16):", ctx_get("veo"))
+print("Pacote Final Reel:", ctx_get("pacote_reel"))
+
+checksum = artifact_save("art_reel_9x16", "/tmp/pifari_reel_pronto.txt", ctx_get("pacote_reel"), "ag_eng_video", "t_pacote_final")
+print("Artefato do Reel salvo com checksum FNV-1a:", checksum)

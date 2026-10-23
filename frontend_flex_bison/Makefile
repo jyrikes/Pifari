@@ -81,6 +81,7 @@ test: pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent
 	./pifari examples/mlp_xor_fluxo.pif
 	./pifari examples/prototipo_multiagente_mcp.pif
 	./pifari examples/teste_cliente_servidor_mcp_pifari.pif
+	./pifari examples/orquestrador_reels_aistudio.pif
 test-fuzz: pifari
 	python3 tests/fuzz_parser.py
 benchmark: pifari

@@ -12,3 +12,9 @@ frontend_flex_bison/frontend/*.o
 frontend_flex_bison/backend/*.o
 __pycache__/
 *.pyc
+.env
+.env.local
+frontend_flex_bison/.env
+frontend_flex_bison/.env.local
+*credentials*.json
+*.key
