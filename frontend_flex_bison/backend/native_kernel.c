@@ -158,7 +158,7 @@ int pifari_native_kernel_create(const PifariExprGraph *graph,
         }
 
         int command_length = snprintf(command, sizeof(command),
-            "gcc -std=c11 -O3 -march=native -fPIC -shared -o %s %s 2>/dev/null",
+            "gcc -std=c11 -O3 -march=native -fPIC -shared -o %s %s </dev/null >/dev/null 2>/dev/null",
             library_path, source_path);
         int sys_rc = (command_length < 0 || (size_t)command_length >= sizeof(command))
             ? -1 : system(command);

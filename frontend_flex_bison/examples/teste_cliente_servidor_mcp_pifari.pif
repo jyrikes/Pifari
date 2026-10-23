@@ -1,0 +1,33 @@
+@ Teste de Integracao Fim a Fim: Pifari Cliente (Orquestrador) <-> Pifari Servidor MCP
+@ O proprio executavel ./pifari sobe outro processo ./pifari rodando servidor_mcp_pifari.pif!
+
+ok = mcp_register("srv_pifari", "stdio", "./pifari examples/servidor_mcp_pifari.pif", 5000, 4)
+ntools = mcp_discover_tools("srv_pifari")
+nres = mcp_discover_resources("srv_pifari")
+manifest = mcp_read_resource("srv_pifari", "resource://pifari/manifest")
+
+print("Servidor MCP Pifari conectado:", ok, "tools:", ntools, "resources:", nres)
+print("Manifesto:", manifest)
+
+Agent("ag_matematico", "Agente Numerico", "Executar calculos pesados via MCP Pifari", "local-deterministic", 2, 5000)
+Agent("ag_vetorial", "Agente Vetorial", "Executar pipelines F64 e matrizes via MCP Pifari", "local-deterministic", 2, 5000)
+
+policy_allow("ag_matematico", "srv_pifari", "ping_echo", false)
+policy_allow("ag_matematico", "srv_pifari", "soma_quadrados", false)
+policy_allow("ag_vetorial", "srv_pifari", "processar_vetor_f64", false)
+policy_allow("ag_vetorial", "srv_pifari", "matmul_bench", false)
+
+echo_res = mcp_call("ag_matematico", "srv_pifari", "ping_echo", '{"msg":"ola_pifari_mcp"}')
+print("Echo MCP Pifari:", echo_res)
+
+Task("t_soma", "ag_matematico", "srv_pifari", "soma_quadrados", '{"limite":200000}', "ctx.soma", 10, 5000)
+Task("t_vetor", "ag_vetorial", "srv_pifari", "processar_vetor_f64", '{"tamanho":50000}', "ctx.vetor", 10, 5000)
+Task("t_matmul", "ag_vetorial", "srv_pifari", "matmul_bench", '{"dim":20}', "ctx.matmul", 5, 5000)
+task_add_dep("t_matmul", "t_soma")
+task_add_dep("t_matmul", "t_vetor")
+
+done = dag_run(2)
+print("Tarefas concluidas no servidor MCP Pifari:", done)
+print("Resultado soma_quadrados(200000):", ctx_get("ctx.soma"))
+print("Resultado processar_vetor_f64(50000):", ctx_get("ctx.vetor"))
+print("Resultado matmul_bench(20):", ctx_get("ctx.matmul"))

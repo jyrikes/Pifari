@@ -5,6 +5,7 @@
 #include "numeric_buffer.h"
 #include "native_kernel.h"
 #include "agent_runtime.h"
+#include "mcp_server.h"
 #include <errno.h>
 #include <math.h>
 #include <float.h>
@@ -83,6 +84,7 @@ static Binding *clone_bindings(Binding *src);
 static Binding *find_binding(const char *name);
 static Binding *node_target_binding(const Node *n, const char *name);
 static Value call_user_function(const Node *call, FunctionDef *fn_def);
+static char *runtime_invoke_mcp_tool_cb(const char *fn_name, size_t argc, const char **argv, int *out_is_error);
 static void jit_compile_function(FunctionDef *f);
 static void free_value(Value v);
 static void fail(const Node *n,const char *fmt,...);
@@ -803,6 +805,57 @@ static Value eval_call(const Node*n){
   int rc=agent_runtime_export_report_json(fp.as.s);free_value(fp);
   return vbool(rc==0);
  }
+ if(!strcmp(name,"mcp_server_init")){
+  if(count!=2){fail(n,"mcp_server_init espera server_name e version");return vnull();}
+  Value sn=eval(args->children[0]),vr=eval(args->children[1]);
+  if(sn.type!=V_STRING||vr.type!=V_STRING){free_value(sn);free_value(vr);fail(n,"mcp_server_init exige strings");return vnull();}
+  pifari_mcp_server_init(sn.as.s,vr.as.s);
+  free_value(sn);free_value(vr);return vbool(1);
+ }
+ if(!strcmp(name,"mcp_server_register_tool")){
+  if(count<4||count>5){fail(n,"mcp_server_register_tool espera tool_name, description, fn_name, param_list, [read_only]");return vnull();}
+  Value tn=eval(args->children[0]),ds=eval(args->children[1]),fn=eval(args->children[2]),pl=eval(args->children[3]);
+  int ro=1;if(count==5){Value rv=eval(args->children[4]);ro=truthy(rv);free_value(rv);}
+  if(tn.type!=V_STRING||ds.type!=V_STRING||fn.type!=V_STRING||pl.type!=V_LIST){
+   free_value(tn);free_value(ds);free_value(fn);free_value(pl);fail(n,"mcp_server_register_tool exige 3 strings e 1 lista de parametros");return vnull();
+  }
+  const char *pnames[PIFARI_MCP_SRV_MAX_PARAMS];
+  size_t pc=pl.as.list.count>PIFARI_MCP_SRV_MAX_PARAMS?PIFARI_MCP_SRV_MAX_PARAMS:pl.as.list.count;
+  for(size_t i=0;i<pc;i++){
+   pnames[i]=pl.as.list.items[i].type==V_STRING?pl.as.list.items[i].as.s:"arg";
+  }
+  int rc=pifari_mcp_server_register_tool(tn.as.s,ds.as.s,fn.as.s,pc,pnames,ro);
+  free_value(tn);free_value(ds);free_value(fn);free_value(pl);
+  return vbool(rc==0);
+ }
+ if(!strcmp(name,"mcp_server_register_resource")){
+  if(count!=4){fail(n,"mcp_server_register_resource espera uri, name, mime_type, content");return vnull();}
+  Value u=eval(args->children[0]),nm=eval(args->children[1]),mt=eval(args->children[2]),ct=eval(args->children[3]);
+  if(u.type!=V_STRING||nm.type!=V_STRING||mt.type!=V_STRING||ct.type!=V_STRING){
+   free_value(u);free_value(nm);free_value(mt);free_value(ct);fail(n,"mcp_server_register_resource exige strings");return vnull();
+  }
+  int rc=pifari_mcp_server_register_resource(u.as.s,nm.as.s,mt.as.s,ct.as.s);
+  free_value(u);free_value(nm);free_value(mt);free_value(ct);
+  return vbool(rc==0);
+ }
+ if(!strcmp(name,"mcp_server_handle_rpc")){
+  if(count!=1){fail(n,"mcp_server_handle_rpc espera json_line");return vnull();}
+  Value jl=eval(args->children[0]);if(jl.type!=V_STRING){free_value(jl);fail(n,"mcp_server_handle_rpc exige string");return vnull();}
+  char out[16384];
+  int has=pifari_mcp_server_handle_line(jl.as.s,runtime_invoke_mcp_tool_cb,out,sizeof(out));
+  free_value(jl);
+  return vstr(has?out:"");
+ }
+ if(!strcmp(name,"mcp_server_run_stdio")){
+  int rc=pifari_mcp_server_run_stdio(runtime_invoke_mcp_tool_cb);
+  return vbool(rc==0);
+ }
+ if(!strcmp(name,"mcp_server_run_http")){
+  if(count!=1){fail(n,"mcp_server_run_http espera porta");return vnull();}
+  Value pv=eval(args->children[0]);int port=pv.type==V_INT?(int)pv.as.i:8765;free_value(pv);
+  int rc=pifari_mcp_server_run_http(port,runtime_invoke_mcp_tool_cb);
+  return vbool(rc==0);
+ }
  Binding*b=find_binding(name);if(b)return copy_value(b->value);
  fail(n,"função '%s' não existe",name);return vnull();
 }
@@ -964,7 +1017,7 @@ static void jit_compile_function(FunctionDef*f){
   FILE*fp=fopen(cpath,"wb");if(!fp){rmdir(temp_dir);free(b.s);free(slots);return;}
   size_t written=fwrite(b.s,1,b.len,fp);int close_rc=fclose(fp);
   if(written==0||close_rc!=0){unlink(cpath);rmdir(temp_dir);free(b.s);free(slots);return;}
-  snprintf(cmd,sizeof(cmd),"gcc -std=c11 -O3 -march=native -shared -fPIC -o %s %s 2>/dev/null",sopath,cpath);
+  snprintf(cmd,sizeof(cmd),"gcc -std=c11 -O3 -march=native -shared -fPIC -o %s %s </dev/null >/dev/null 2>/dev/null",sopath,cpath);
   int rc=system(cmd);unlink(cpath);
   if(rc!=0){unlink(sopath);rmdir(temp_dir);free(b.s);free(slots);return;}
   if(rename(sopath,cachepath)!=0){unlink(sopath);rmdir(temp_dir);free(b.s);free(slots);return;}
@@ -1212,6 +1265,50 @@ static Value call_user_function(const Node *call,FunctionDef *fn_def){
  if(frame->slots!=stack_slots)free(frame->slots);
  return_active=saved_return_active;return_value=saved_return_value;
  return result;
+}
+static char *runtime_invoke_mcp_tool_cb(const char *fn_name,size_t argc,const char **argv,int *out_is_error){
+ if(out_is_error)*out_is_error=0;
+ FunctionDef *fn_def=NULL;
+ for(FunctionDef *f=functions;f;f=f->next)if(!strcmp(f->name,fn_name?fn_name:"")){fn_def=f;break;}
+ if(!fn_def){if(out_is_error)*out_is_error=1;return dup_string("funcao Pifari nao encontrada");}
+ Node arg_nodes[PIFARI_MCP_SRV_MAX_PARAMS];
+ Node *arg_ptrs[PIFARI_MCP_SRV_MAX_PARAMS];
+ memset(arg_nodes,0,sizeof(arg_nodes));
+ if(argc>PIFARI_MCP_SRV_MAX_PARAMS)argc=PIFARI_MCP_SRV_MAX_PARAMS;
+ for(size_t i=0;i<argc;i++){
+  const char *raw=(argv&&argv[i])?argv[i]:"";
+  arg_nodes[i].local_slot=-1;arg_nodes[i].target_slot=-1;arg_nodes[i].line=1;arg_nodes[i].column=1;
+  char *end_i=NULL,*end_f=NULL;
+  errno=0;long long iv=strtoll(raw,&end_i,10);
+  if(raw[0]&&errno==0&&end_i&&*end_i=='\0'){
+   arg_nodes[i].kind="Integer";arg_nodes[i].value=(char*)raw;arg_nodes[i].integer_cache=iv;arg_nodes[i].numeric_cached=1;
+  }else{
+   errno=0;double fv=strtod(raw,&end_f);
+   if(raw[0]&&errno==0&&end_f&&*end_f=='\0'){
+    arg_nodes[i].kind="Float";arg_nodes[i].value=(char*)raw;arg_nodes[i].float_cache=fv;arg_nodes[i].numeric_cached=1;
+   }else if(!strcmp(raw,"true")||!strcmp(raw,"false")){
+    arg_nodes[i].kind="Boolean";arg_nodes[i].value=(char*)raw;
+   }else{
+    arg_nodes[i].kind="String";arg_nodes[i].value=(char*)raw;
+   }
+  }
+  arg_ptrs[i]=&arg_nodes[i];
+ }
+ Node args_list={0};args_list.kind="Arguments";args_list.children=arg_ptrs;args_list.count=argc;args_list.local_slot=-1;args_list.target_slot=-1;
+ Node *call_children[1]={&args_list};
+ Node call_node={0};call_node.kind="Call";call_node.value=(char*)fn_name;call_node.children=call_children;call_node.count=1;call_node.line=1;call_node.column=1;call_node.local_slot=-1;call_node.target_slot=-1;
+ int saved_failed=runtime_failed;runtime_failed=0;
+ Value out_val=call_user_function(&call_node,fn_def);
+ if(runtime_failed){
+  if(out_is_error)*out_is_error=1;
+  free_value(out_val);
+  runtime_failed=saved_failed;
+  return dup_string("erro de execucao na ferramenta Pifari");
+ }
+ runtime_failed=saved_failed;
+ char *str=stringify(out_val);
+ free_value(out_val);
+ return str;
 }
 typedef struct {
  size_t next, count;
@@ -1500,9 +1597,46 @@ static Value eval(const Node*n){
  fail(n,"expressão não suportada: %s",n->kind);return vnull();
 }
 static void exec_block(const Node*n){if(!n)return;for(size_t i=0;i<n->count&&!runtime_failed&&!return_active;i++)exec_node(n->children[i]);}
+static int try_assign_list_append_in_place(const Node *n){
+ if(!n->value||n->count<1)return 0;
+ const Node *rhs=n->children[0];
+ if(!rhs||strcmp(rhs->kind,"Binary")||!rhs->value||strcmp(rhs->value,"+")||rhs->count!=2)return 0;
+ const Node *lhs_var=rhs->children[0],*rhs_add=rhs->children[1];
+ if(!lhs_var||strcmp(lhs_var->kind,"Name")||!lhs_var->value||strcmp(lhs_var->value,n->value))return 0;
+ if(!rhs_add||strcmp(rhs_add->kind,"List")||rhs_add->count!=1)return 0;
+ const Node *list_args=rhs_add->children[0];
+ if(!list_args||list_args->count!=1)return 0;
+ Binding *b=node_target_binding(n,n->value);
+ if(!b||b->value.type!=V_LIST||!b->value.as.list.items)return 0;
+ Value item=eval(list_args->children[0]);
+ if(runtime_failed){free_value(item);return 1;}
+ b=node_target_binding(n,n->value);
+ if(!b||b->value.type!=V_LIST||!b->value.as.list.items){free_value(item);return 0;}
+ ListStorage *s=list_storage(b->value);
+ size_t old_count=b->value.as.list.count,need=old_count+1;
+ if(__atomic_load_n(&s->refs,__ATOMIC_ACQUIRE)==1){
+  if(need>s->capacity){
+   size_t new_cap=s->capacity<16?16:s->capacity*2;
+   if(new_cap<need)new_cap=need;
+   ListStorage *ns=realloc(s,sizeof(ListStorage)+new_cap*sizeof(Value));
+   if(!ns){free_value(item);fail(n,"out of memory");return 1;}
+   ns->capacity=new_cap;s=ns;b->value.as.list.items=s->items;
+  }
+  s->items[old_count]=item;
+  b->value.as.list.count=need;
+  return 1;
+ }
+ Value out=list_new(need);
+ if(out.type==V_NULL){free_value(item);fail(n,"out of memory");return 1;}
+ for(size_t i=0;i<old_count;i++)out.as.list.items[i]=copy_value(b->value.as.list.items[i]);
+ out.as.list.items[old_count]=item;
+ set_node_binding(n,n->value,out,n);
+ return 1;
+}
 static void exec_node(const Node*n){
  if(!n||runtime_failed)return;
  if(!strcmp(n->kind,"Program")||!strcmp(n->kind,"Block")||!strcmp(n->kind,"Statements")){exec_block(n);return;}
+ if(!strcmp(n->kind,"Assign")&&try_assign_list_append_in_place(n))return;
  if(!strcmp(n->kind,"TypedDecl")||!strcmp(n->kind,"Attribute")){
   if(!n->value||!n->count){fail(n,"declaração tipada inválida");return;}
   const Node*init=NULL;

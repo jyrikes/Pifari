@@ -1,0 +1,52 @@
+@ Servidor MCP Nativo escrito em Pifari (Protocolo MCP 2025-03-26)
+mcp_server_init("pifari-native-mcp", "1.0.0")
+
+@ 1. Ferramenta de baixa latencia (echo/diagnostico JSON-RPC)
+function ping_echo(msg)
+    return "PONG:" + str(msg)
+
+@ 2. Ferramenta numerica escalar intensiva (compilada por JIT/VM no Pifari)
+function soma_quadrados(limite)
+    soma = 0
+    for i in range(limite)
+        soma = soma + (i * i - i // 2)
+    return soma
+
+@ 3. Ferramenta vetorial cientifica F64 com fusao nativa de cadeias
+function etapa_afim(x)
+    return x * 1.75 + 2.5
+
+function etapa_quad(x)
+    return x * x * 0.001 + x
+
+function processar_vetor_f64(tamanho)
+    arr = f64_array(range(int(tamanho)))
+    out = map_fused_chain(["etapa_afim", "etapa_quad"], arr)
+    return out[-1]
+
+@ 4. Ferramenta de algebra linear (multiplicacao de matrizes matmul)
+function matmul_bench(dim)
+    n = int(dim)
+    A = []
+    B = []
+    for i in range(n)
+        rowA = []
+        rowB = []
+        for j in range(n)
+            rowA = rowA + [(i + j + 1) * 0.5]
+            rowB = rowB + [(i * 2 + j + 1) * 0.25]
+        A = A + [rowA]
+        B = B + [rowB]
+    C = matmul(A, B)
+    return C[n - 1][n - 1]
+
+@ Registro declarativo das ferramentas e recursos MCP
+mcp_server_register_tool("ping_echo", "Ecoa mensagem para medir latencia pura JSON-RPC", "ping_echo", ["msg"], true)
+mcp_server_register_tool("soma_quadrados", "Calcula soma quadratica intensiva em CPU", "soma_quadrados", ["limite"], true)
+mcp_server_register_tool("processar_vetor_f64", "Executa cadeia vetorial F64 fundida em codigo nativo", "processar_vetor_f64", ["tamanho"], true)
+mcp_server_register_tool("matmul_bench", "Executa multiplicacao nativa de matrizes NxN", "matmul_bench", ["dim"], true)
+
+mcp_server_register_resource("resource://pifari/manifest", "Manifesto do Servidor MCP Pifari", "application/json", '{"server":"pifari-native-mcp","language":"Pifari","protocol":"2025-03-26","features":["jit","f64_array","fused_chain","matmul"]}')
+
+@ Inicia o loop principal JSON-RPC 2.0 sobre stdio
+mcp_server_run_stdio()

@@ -256,30 +256,32 @@ static McpStatus stdio_read_rpc_response(
         if (pr == 0) continue;
 
         if (pfd.revents & (POLLIN | POLLHUP)) {
-            char ch;
-            ssize_t r = read(srv->stdout_fd, &ch, 1);
-            if (r < 0) {
-                if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) continue;
-                return MCP_STATUS_ERR_TRANSPORT;
-            }
-            if (r == 0) {
-                return MCP_STATUS_ERR_TRANSPORT;
-            }
-            if (ch == '\n') {
-                line_buf[line_pos] = '\0';
-                line_pos = 0;
-                if (line_buf[0] == '\0') continue;
-                long long resp_id = -1;
-                if (json_extract_int(line_buf, "id", &resp_id) && resp_id == expected_id) {
-                    snprintf(out_buf, out_cap, "%s", line_buf);
-                    return MCP_STATUS_OK;
+            for (;;) {
+                char ch;
+                ssize_t r = read(srv->stdout_fd, &ch, 1);
+                if (r < 0) {
+                    if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) break;
+                    return MCP_STATUS_ERR_TRANSPORT;
                 }
-                /* Ignore notifications or stale responses from timed-out/cancelled requests */
-            } else if (ch != '\r') {
-                if (line_pos + 1 < sizeof(line_buf)) {
-                    line_buf[line_pos++] = ch;
-                } else {
-                    return MCP_STATUS_ERR_PAYLOAD_TOO_LARGE;
+                if (r == 0) {
+                    return MCP_STATUS_ERR_TRANSPORT;
+                }
+                if (ch == '\n') {
+                    line_buf[line_pos] = '\0';
+                    line_pos = 0;
+                    if (line_buf[0] == '\0') continue;
+                    long long resp_id = -1;
+                    if (json_extract_int(line_buf, "id", &resp_id) && resp_id == expected_id) {
+                        snprintf(out_buf, out_cap, "%s", line_buf);
+                        return MCP_STATUS_OK;
+                    }
+                    /* Ignore notifications or stale responses from timed-out/cancelled requests */
+                } else if (ch != '\r') {
+                    if (line_pos + 1 < sizeof(line_buf)) {
+                        line_buf[line_pos++] = ch;
+                    } else {
+                        return MCP_STATUS_ERR_PAYLOAD_TOO_LARGE;
+                    }
                 }
             }
         }
@@ -573,7 +575,9 @@ McpStatus mcp_gateway_connect(const char *server_id) {
             dup2(out_pipe[1], STDOUT_FILENO);
             close(in_pipe[0]); close(in_pipe[1]);
             close(out_pipe[0]); close(out_pipe[1]);
-            execl("/bin/sh", "sh", "-c", srv->endpoint, (char *)NULL);
+            char exec_cmd[600];
+            snprintf(exec_cmd, sizeof(exec_cmd), "exec %s", srv->endpoint);
+            execl("/bin/sh", "sh", "-c", exec_cmd, (char *)NULL);
             _exit(127);
         }
         close(in_pipe[0]);

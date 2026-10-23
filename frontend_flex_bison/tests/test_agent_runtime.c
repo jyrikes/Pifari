@@ -1,10 +1,19 @@
 #include <assert.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
 #include "agent_runtime.h"
 #include "mcp_gateway.h"
+#include "mcp_server.h"
+
+static char *dummy_tool_cb(const char *fn_name, size_t argc, const char **argv, int *out_is_error) {
+    if (out_is_error) *out_is_error = 0;
+    char *buf = malloc(128);
+    snprintf(buf, 128, "%s:%zu:%s", fn_name, argc, (argc > 0 && argv[0]) ? argv[0] : "");
+    return buf;
+}
 
 int main(void) {
     agent_runtime_reset();
@@ -160,6 +169,17 @@ int main(void) {
     unlink("/tmp/pifari_test_artifact.txt");
     unlink("/tmp/pifari_test_telemetry.json");
     agent_runtime_reset();
+
+    /* 8. Native MCP Server Engine C unit verification */
+    pifari_mcp_server_init("unit-srv", "1.0.0");
+    const char *params[1] = {"x"};
+    assert(pifari_mcp_server_register_tool("dobro", "Dobra valor", "fn_dobro", 1, params, 1) == 0);
+    assert(pifari_mcp_server_register_resource("resource://unit/info", "info", "application/json", "{\"ok\":true}") == 0);
+    char rpc_out[2048];
+    assert(pifari_mcp_server_handle_line("{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}", dummy_tool_cb, rpc_out, sizeof(rpc_out)) == 1);
+    assert(strstr(rpc_out, "2025-03-26") != NULL);
+    assert(pifari_mcp_server_handle_line("{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/call\",\"params\":{\"name\":\"dobro\",\"arguments\":{\"x\":\"42\"}}}", dummy_tool_cb, rpc_out, sizeof(rpc_out)) == 1);
+    assert(strstr(rpc_out, "fn_dobro:1:42") != NULL);
 
     printf("test_agent_runtime: ok\n");
     return 0;
