@@ -38,6 +38,8 @@ backend/reversible.o: backend/reversible.c backend/reversible.h
 	$(CC) $(CFLAGS) -c $< -o $@
 backend/gpu_client.o: backend/gpu_client.c backend/gpu_client.h backend/devices.h
 	$(CC) $(CFLAGS) -c $< -o $@
+backend/plan.o: backend/plan.c backend/plan.h
+	$(CC) $(CFLAGS) -c $< -o $@
 backend/effects.o: backend/effects.c backend/effects.h
 	$(CC) $(CFLAGS) -c $< -o $@
 backend/typecheck.o: backend/typecheck.c backend/typecheck.h backend/types.h
@@ -46,7 +48,7 @@ backend/types.o: backend/types.c backend/types.h
 	$(CC) $(CFLAGS) -c $< -o $@
 backend/devices.o: backend/devices.c backend/devices.h
 	$(CC) $(CFLAGS) -c $< -o $@
-pifari: frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o backend/devices.o backend/types.o backend/typecheck.o backend/effects.o backend/gpu_client.o
+pifari: frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o backend/devices.o backend/types.o backend/typecheck.o backend/effects.o backend/plan.o backend/gpu_client.o
 	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm -ldl
 test_optimizer: tests/test_optimizer.c backend/optimizer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o
 	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm
@@ -105,7 +107,7 @@ benchmark: pifari
 	python3 examples/benchmark_mlp_xor.py
 	./pifari examples/carga_fluxo_puro.pif
 clean:
-	rm -f pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent_runtime parser.tab.c parser.tab.h lex.yy.c parser.output frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o backend/devices.o backend/types.o backend/typecheck.o backend/effects.o backend/gpu_client.o
+	rm -f pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent_runtime parser.tab.c parser.tab.h lex.yy.c parser.output frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o backend/devices.o backend/types.o backend/typecheck.o backend/effects.o backend/plan.o backend/gpu_client.o
 
 test-gpu: pifari
 	./pifari examples/gpu_dispositivos.pif
@@ -193,3 +195,6 @@ check-core: pifari
 	./pifari --check examples/tipos.pif
 	./pifari examples/efeitos.pif
 	./pifari --check examples/conc_shared.pif
+
+test-equiv: pifari
+	sh tests/equiv.sh examples/gpu_dispositivos.pif examples/carga_fluxo_puro.pif examples/benchmark_fused_chain.pif examples/teste_cliente_servidor_mcp_pifari.pif examples/prototipo_multiagente_mcp.pif examples/mlp_xor_fluxo.pif examples/mlp_xor.pif examples/paralelismo_assincrono.pif examples/nova_sintaxe_fluxo.pif examples/funcoes.pif examples/conc_tarefas.pif examples/conc_processos.pif examples/conc_fluxos.pif examples/fluxo_sincronizacao.pif examples/fluxo_coleta.pif examples/fluxo_paralelo.pif examples/fluxo_sequencial.pif examples/runtime_fluxo.pif examples/runtime_slots_pool.pif examples/runtime_otimizacoes.pif examples/runtime_matmul.pif examples/runtime_matriz.pif examples/runtime_indexed_native.pif examples/typed_arrays.pif examples/runtime_fused_chain.pif examples/runtime_vm_index_compare.pif examples/runtime_vm.pif examples/runtime_operadores.pif examples/runtime_lista.pif examples/teste_range_preguicoso.pif examples/runtime_numeric_tools.pif examples/runtime_fusion.pif examples/runtime_map_fused.pif examples/efeitos.pif

@@ -163,3 +163,23 @@ Regras:
 Efeito **não** muda a ordem de execução nem o resultado: ele só autoriza ou veta
 especialização. Um fluxo paralelo sobre função impura continua rodando em paralelo
 (a semântica manda), apenas não é promovido a kernel nativo.
+
+### 8.1 Ressalva sobre efeitos dentro de `>|` (importante)
+
+A ordem dos resultados de `>|` é a de entrada (garantida), mas a **ordem dos efeitos
+colaterais** de prints dentro de um fluxo paralelo não é especificada — depende do
+escalonamento das threads. Programa que imprime dentro de `>|` é, por definição da
+linguagem, não determinístico.
+
+Consequência prática para o teste diferencial: só serve como oráculo o programa cuja
+saída já é estável entre duas execuções do **mesmo** modo. `tests/equiv.sh` detecta isso
+rodando duas vezes em `PIFARI_OPT=0`; se divergir, pula com `SKIP nao-deterministico`.
+
+Resultado atual: 25 programas com saída byte a byte idêntica entre `OPT=0` e `OPT=2`,
+9 pulados por não determinismo próprio (tempo, `thread_id` ou print dentro de fluxo).
+Nenhuma divergência atribuída a otimização.
+
+### 8.2 Nunca incluir o orquestrador de Reels
+
+`examples/orquestrador_reels_aistudio.pif` chama a API do Gemini e consome quota. Ele não
+entra em `test-core`, `check-core` nem `test-equiv`.

@@ -10,6 +10,7 @@
 #include "gpu_client.h"
 #include "types.h"
 #include "effects.h"
+#include "plan.h"
 #include <errno.h>
 #include <math.h>
 #include <float.h>
@@ -301,6 +302,7 @@ static int bc_compile_node(ByteBuilder*b,const Node*n){
 }
 static pthread_mutex_t bytecode_compile_mutex = PTHREAD_MUTEX_INITIALIZER;
 static int bc_ensure(const Node*n){
+ if(pifari_opt_level()==0)return 0;
  Node*m=(Node*)n;
  /* Hot path: compiled bytecode is published once and then read without locking. */
  if(__atomic_load_n(&m->bytecode_ready,__ATOMIC_ACQUIRE))
@@ -1245,6 +1247,7 @@ static int jit_definitely_assigned(const Node *body,Binding *slots,size_t used){
  free(names);free(assigned);
  return ok;
 }static void jit_compile_function(FunctionDef*f){
+ if(pifari_opt_level()==0){pifari_plan_log("funcao",f?f->name:NULL,PLAN_WALK,"opt=0");return;}
  if(!f||!f->node||strcmp(f->node->kind,"Function"))return;
  const Node*def=f->node,*params=def->count?def->children[0]:NULL,*body=def->count>1?def->children[1]:NULL;
  if(!params||params->count!=1||!params->children[0]->value||!body)return;
@@ -1288,7 +1291,7 @@ static int jit_definitely_assigned(const Node *body,Binding *slots,size_t used){
  free(b.s);free(slots);if(!h)return;
  void*sym=dlsym(h,"pifari_jit");long long(*fn)(long long)=NULL;
  if(!sym||sizeof(fn)!=sizeof(sym)){dlclose(h);return;}
- memcpy(&fn,&sym,sizeof(fn));f->jit_handle=h;f->jit_fn=fn;f->jit_requires_range=requires_range;
+ memcpy(&fn,&sym,sizeof(fn));f->jit_handle=h;f->jit_fn=fn;f->jit_requires_range=requires_range;pifari_plan_log("funcao",f->name,PLAN_JIT,"atribuicao definida");
 }
 static void free_function_registry(void){
  while(functions){
@@ -1363,6 +1366,7 @@ static int bc_compile_statement(ByteBuilder*b,const Node*n,const Node*owner){
  return 0;
 }
 static int bc_ensure_function(const Node*definition,const Node*body){
+ if(pifari_opt_level()==0)return 0;
  Node*m=(Node*)definition;
  if(__atomic_load_n(&m->function_code_ready,__ATOMIC_ACQUIRE))return m->function_code_supported;
  pthread_mutex_lock(&bytecode_compile_mutex);
