@@ -1,7 +1,7 @@
 
 @ ===== 1. Variáveis e tipos =====@
 idade =: int(20)
-altura =: float("1.75")
+altura =: float(1.75)
 nome = "Yngrid"
 ativo = true
 vazio = "Null"

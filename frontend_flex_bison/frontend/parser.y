@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include "frontend/ast.h"
 #include "backend/runtime.h"
+#include "backend/typecheck.h"
 int yylex(void); void yyerror(const char *s);
 extern int yylineno, yycolumn; extern FILE *yyin;
 Node *pifari_root=NULL;
@@ -144,4 +145,18 @@ arguments: expr {$$=node_add(node_new("Arguments",NULL,@1.first_line,@1.first_co
 type_expr: TYPE {$$=node_new("Type",$1,@1.first_line,@1.first_column);free($1);} | IDENTIFIER {$$=node_new("Type",$1,@1.first_line,@1.first_column);free($1);};
 %%
 void yyerror(const char*s){fprintf(stderr,"Pifari:%d:%d: erro sintático: %s\n",yylloc.first_line,yylloc.first_column,s);}
-int main(int argc,char**argv){if(argc!=2){fprintf(stderr,"Uso: %s arquivo.pif\n",argv[0]);return 2;}yyin=fopen(argv[1],"r");if(!yyin){perror(argv[1]);return 2;}int parsed=yyparse();int status=1;if(parsed==0&&pifari_root)status=runtime_execute(pifari_root);node_free(pifari_root);fclose(yyin);return status;}
+int main(int argc,char**argv){
+ int check_mode=0;const char*path=NULL;
+ if(argc==3&&!strcmp(argv[1],"--check")){check_mode=1;path=argv[2];}
+ else if(argc==2&&strcmp(argv[1],"--check")){path=argv[1];}
+ else {fprintf(stderr,"Uso: %s [--check] arquivo.pif\n",argv[0]);return 2;}
+ yyin=fopen(path,"r");if(!yyin){perror(path);return 2;}
+ int parsed=yyparse();int status=1;
+ if(parsed==0&&pifari_root){
+  if(check_mode){
+   int errors=pifari_typecheck_program(pifari_root);
+   status=errors?2:0;
+  }else status=runtime_execute(pifari_root);
+ }
+ node_free(pifari_root);fclose(yyin);return status;
+}

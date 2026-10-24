@@ -112,3 +112,29 @@ permitido, mudar resultado não é.
 | Tipo de anotação `=:` não verificado | F1 |
 | Classe/`import`/`#include`/`Link to` não executam | F0 (erro explícito) |
 | GPU em `float` diverge de `double` do CPU | E4 (documentado, tolerância) |
+
+---
+
+## 11. Verificação estática (`--check`, F1c)
+
+`pifari --check arquivo.pif` faz análise sintática e semântica e **não executa**. Sai com
+`0` se não houver erro e `2` se houver. Regras verificadas:
+
+| Verificação | Nível |
+|---|---|
+| Tipo de anotação `=:` desconhecido | erro |
+| Atribuição incompatível com anotação, quando o valor é literal | erro |
+| Retorno literal incompatível com `-> tipo` | erro |
+| Nome lido no escopo global sem declaração anterior | erro |
+| Nome lido dentro de função sem declaração | **aviso** (ligação tardia de global) |
+| `break`/`continue` fora de laço | erro |
+| Aridade de chamada para função definida no programa | erro |
+| Diretiva `import`/`#include`/`Link to` e `class` | erro |
+| Declaração `=:` duplicada no mesmo escopo | erro |
+
+**Por que função é leniente:** Pifari resolve globais no momento da chamada, então uma
+função pode referenciar `pesos` declarado depois dela no arquivo (é o caso de
+`mlp_xor.pif`). Rejeitar isso seria falso positivo; o aviso fica no stderr e não bloqueia.
+
+`make check-core` roda o `--check` em todos os 36 programas do `test-core`; hoje passa
+com zero erros (só os avisos de ligação tardia).

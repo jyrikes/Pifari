@@ -38,11 +38,13 @@ backend/reversible.o: backend/reversible.c backend/reversible.h
 	$(CC) $(CFLAGS) -c $< -o $@
 backend/gpu_client.o: backend/gpu_client.c backend/gpu_client.h backend/devices.h
 	$(CC) $(CFLAGS) -c $< -o $@
+backend/typecheck.o: backend/typecheck.c backend/typecheck.h backend/types.h
+	$(CC) $(CFLAGS) -c $< -o $@
 backend/types.o: backend/types.c backend/types.h
 	$(CC) $(CFLAGS) -c $< -o $@
 backend/devices.o: backend/devices.c backend/devices.h
 	$(CC) $(CFLAGS) -c $< -o $@
-pifari: frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o backend/devices.o backend/types.o backend/gpu_client.o
+pifari: frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o backend/devices.o backend/types.o backend/typecheck.o backend/gpu_client.o
 	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm -ldl
 test_optimizer: tests/test_optimizer.c backend/optimizer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o
 	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm
@@ -101,7 +103,7 @@ benchmark: pifari
 	python3 examples/benchmark_mlp_xor.py
 	./pifari examples/carga_fluxo_puro.pif
 clean:
-	rm -f pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent_runtime parser.tab.c parser.tab.h lex.yy.c parser.output frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o backend/devices.o backend/types.o backend/gpu_client.o
+	rm -f pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent_runtime parser.tab.c parser.tab.h lex.yy.c parser.output frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o backend/devices.o backend/types.o backend/typecheck.o backend/gpu_client.o
 
 test-gpu: pifari
 	./pifari examples/gpu_dispositivos.pif
@@ -149,3 +151,41 @@ test-conc: pifari
 	./pifari examples/conc_tarefas.pif
 	./pifari examples/conc_shared.pif
 	./pifari examples/tipos.pif
+
+check-core: pifari
+	./pifari --check examples/gpu_dispositivos.pif
+	./pifari --check examples/carga_fluxo_puro.pif
+	./pifari --check examples/benchmark_fused_chain.pif
+	./pifari --check examples/orquestrador_reels_aistudio.pif
+	./pifari --check examples/teste_cliente_servidor_mcp_pifari.pif
+	./pifari --check examples/prototipo_multiagente_mcp.pif
+	./pifari --check examples/mlp_xor_fluxo.pif
+	./pifari --check examples/mlp_xor.pif
+	./pifari --check examples/paralelismo_assincrono.pif
+	./pifari --check examples/nova_sintaxe_fluxo.pif
+	./pifari --check examples/funcoes.pif
+	./pifari --check examples/conc_tarefas.pif
+	./pifari --check examples/conc_processos.pif
+	./pifari --check examples/conc_fluxos.pif
+	./pifari --check examples/fluxo_sincronizacao.pif
+	./pifari --check examples/fluxo_coleta.pif
+	./pifari --check examples/fluxo_paralelo.pif
+	./pifari --check examples/fluxo_sequencial.pif
+	./pifari --check examples/runtime_fluxo.pif
+	./pifari --check examples/runtime_slots_pool.pif
+	./pifari --check examples/runtime_otimizacoes.pif
+	./pifari --check examples/runtime_matmul.pif
+	./pifari --check examples/runtime_matriz.pif
+	./pifari --check examples/runtime_indexed_native.pif
+	./pifari --check examples/typed_arrays.pif
+	./pifari --check examples/runtime_fused_chain.pif
+	./pifari --check examples/runtime_vm_index_compare.pif
+	./pifari --check examples/runtime_vm.pif
+	./pifari --check examples/runtime_operadores.pif
+	./pifari --check examples/runtime_lista.pif
+	./pifari --check examples/teste_range_preguicoso.pif
+	./pifari --check examples/runtime_numeric_tools.pif
+	./pifari --check examples/runtime_fusion.pif
+	./pifari --check examples/runtime_map_fused.pif
+	./pifari --check examples/tipos.pif
+	./pifari --check examples/conc_shared.pif
