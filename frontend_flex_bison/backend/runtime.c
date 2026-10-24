@@ -340,10 +340,10 @@ static Value eval_bytecode(const Node*n){
      r=vbool(in.op==BC_LT?cmp<0:in.op==BC_LE?cmp<=0:in.op==BC_GT?cmp>0:cmp>=0);free_value(a);free_value(b);stack[sp++]=r;break;
     }
     if((a.type!=V_INT&&a.type!=V_FLOAT)||(b.type!=V_INT&&b.type!=V_FLOAT)){free_value(a);free_value(b);fail(n,"a VM aritmética exige operandos numéricos");break;}
-    if(in.op==BC_ADD&&a.type==V_INT&&b.type==V_INT)r=vint(a.as.i+b.as.i);
-    else if(in.op==BC_SUB&&a.type==V_INT&&b.type==V_INT)r=vint(a.as.i-b.as.i);
-    else if(in.op==BC_MUL&&a.type==V_INT&&b.type==V_INT)r=vint(a.as.i*b.as.i);
-    else {double x=number(a,n),y=number(b,n);if(in.op==BC_ADD)r=vfloat(x+y);else if(in.op==BC_SUB)r=vfloat(x-y);else if(in.op==BC_MUL)r=vfloat(x*y);else if(in.op==BC_DIV){if(y==0)fail(n,"divisão por zero");else r=vfloat(x/y);}else if(in.op==BC_IDIV){if(y==0)fail(n,"divisão por zero");else r=(a.type==V_INT&&b.type==V_INT)?vint(a.as.i/b.as.i):vint((long long)floor(x/y));}else if(in.op==BC_MOD){if(y==0)fail(n,"divisão por zero");else r=vint((long long)x%(long long)y);}else if(in.op==BC_POW)r=vfloat(pow(x,y));}
+    if(in.op==BC_ADD&&a.type==V_INT&&b.type==V_INT){long long z;if(__builtin_add_overflow(a.as.i,b.as.i,&z))fail(n,"overflow de inteiro na soma");else r=vint(z);}
+    else if(in.op==BC_SUB&&a.type==V_INT&&b.type==V_INT){long long z;if(__builtin_sub_overflow(a.as.i,b.as.i,&z))fail(n,"overflow de inteiro na subtracao");else r=vint(z);}
+    else if(in.op==BC_MUL&&a.type==V_INT&&b.type==V_INT){long long z;if(__builtin_mul_overflow(a.as.i,b.as.i,&z))fail(n,"overflow de inteiro na multiplicacao");else r=vint(z);}
+    else {double x=number(a,n),y=number(b,n);if(in.op==BC_ADD)r=vfloat(x+y);else if(in.op==BC_SUB)r=vfloat(x-y);else if(in.op==BC_MUL)r=vfloat(x*y);else if(in.op==BC_DIV){if(y==0)fail(n,"divisão por zero");else r=vfloat(x/y);}else if(in.op==BC_IDIV){if(y==0)fail(n,"divisão por zero");else r=(a.type==V_INT&&b.type==V_INT)?vint(a.as.i/b.as.i):vint((long long)(x/y));}else if(in.op==BC_MOD){if(y==0)fail(n,"divisão por zero");else r=vint((long long)x%(long long)y);}else if(in.op==BC_POW)r=vfloat(pow(x,y));}
     free_value(a);free_value(b);if(!runtime_failed)stack[sp++]=r;else free_value(r);break;
   }
  }
@@ -401,10 +401,10 @@ static Value eval_binary(const Node*n){
   else if(n->op_code==PIFARI_OP_GT)result=vbool(cmp>0);
   else result=vbool(cmp>=0);
  } else if(a.type==V_INT&&b.type==V_INT&&n->op_code!=PIFARI_OP_DIV&&n->op_code!=PIFARI_OP_POW){
-  long long x=a.as.i,y=b.as.i;
-  if(n->op_code==PIFARI_OP_ADD)result=vint(x+y);
-  else if(n->op_code==PIFARI_OP_SUB)result=vint(x-y);
-  else if(n->op_code==PIFARI_OP_MUL)result=vint(x*y);
+  long long x=a.as.i,y=b.as.i,z=0;
+  if(n->op_code==PIFARI_OP_ADD){if(__builtin_add_overflow(x,y,&z))fail(n,"overflow de inteiro na soma");else result=vint(z);}
+  else if(n->op_code==PIFARI_OP_SUB){if(__builtin_sub_overflow(x,y,&z))fail(n,"overflow de inteiro na subtracao");else result=vint(z);}
+  else if(n->op_code==PIFARI_OP_MUL){if(__builtin_mul_overflow(x,y,&z))fail(n,"overflow de inteiro na multiplicacao");else result=vint(z);}
   else if(n->op_code==PIFARI_OP_FLOORDIV||n->op_code==PIFARI_OP_MOD){
    if(!y)fail(n,"divisão por zero");else result=vint(n->op_code==PIFARI_OP_FLOORDIV?x/y:x%y);
   } else valid=0;
@@ -1134,7 +1134,90 @@ static int jit_stmt(JitBuffer*b,const Node*n,const Node*owner,int*has_return,int
  }
  return 0;
 }
-static void jit_compile_function(FunctionDef*f){
+/* Atribuição definida para o JIT.
+   O C gerado inicializa todos os slots com 0. Se a função lê um slot antes de
+   atribuí-lo, o interpretador leria o valor externo capturado no frame e o JIT
+   leria 0 — resultado diferente. Enquanto a inicialização de slots não for
+   passada ao JIT, só compilamos funções em que toda leitura é de parâmetro ou de
+   nome atribuído antes, no fluxo linear. */
+typedef struct { const char **names; unsigned char *assigned; size_t count; } JitDefEnv;
+
+static int jit_de_lookup(JitDefEnv *env,const char *name){
+ if(!name)return -1;
+ for(size_t i=0;i<env->count;i++)if(env->names[i]&&!strcmp(env->names[i],name))return (int)i;
+ return -1;
+}
+static int jit_de_expr_ok(const Node *n,JitDefEnv *env){
+ if(!n)return 1;
+ if(!strcmp(n->kind,"Name")){
+  int slot=jit_de_lookup(env,n->value);
+  return slot>=0&&env->assigned[slot];
+ }
+ if(!strcmp(n->kind,"Function")||!strcmp(n->kind,"FunctionExpr"))return 0;
+ for(size_t i=0;i<n->count;i++)if(!jit_de_expr_ok(n->children[i],env))return 0;
+ return 1;
+}
+static void jit_de_assign(JitDefEnv *env,const char *name){
+ int slot=jit_de_lookup(env,name);
+ if(slot>=0)env->assigned[slot]=1;
+}
+static int jit_de_stmt_ok(const Node *n,JitDefEnv *env){
+ if(!n)return 1;
+ if(!strcmp(n->kind,"Block")||!strcmp(n->kind,"Statements")){
+  for(size_t i=0;i<n->count;i++)if(!jit_de_stmt_ok(n->children[i],env))return 0;
+  return 1;
+ }
+ if(!strcmp(n->kind,"Assign")||!strcmp(n->kind,"TypedDecl")){
+  for(size_t i=0;i<n->count;i++)if(!jit_de_expr_ok(n->children[i],env))return 0;
+  jit_de_assign(env,n->value);
+  return 1;
+ }
+ if(!strcmp(n->kind,"IndexAssign")){
+  for(size_t i=0;i<n->count;i++)if(!jit_de_expr_ok(n->children[i],env))return 0;
+  return 1;
+ }
+ if(!strcmp(n->kind,"ExpressionStatement"))return n->count?jit_de_expr_ok(n->children[0],env):1;
+ if(!strcmp(n->kind,"Return"))return n->count?jit_de_expr_ok(n->children[0],env):1;
+ if(!strcmp(n->kind,"Break")||!strcmp(n->kind,"Continue"))return 1;
+ if(!strcmp(n->kind,"For")){
+  if(n->count<2||!jit_de_expr_ok(n->children[0],env))return 0;
+  JitDefEnv inner=*env;
+  inner.assigned=calloc(env->count?env->count:1,1);
+  if(!inner.assigned)return 0;
+  memcpy(inner.assigned,env->assigned,env->count);
+  jit_de_assign(&inner,n->value);
+  int ok=jit_de_stmt_ok(n->children[1],&inner);
+  free(inner.assigned);
+  return ok;
+ }
+ if(!strcmp(n->kind,"If")||!strcmp(n->kind,"IfElse")){
+  if(n->count<2||!jit_de_expr_ok(n->children[0],env))return 0;
+  for(size_t branch=1;branch<n->count;branch++){
+   JitDefEnv inner=*env;
+   inner.assigned=calloc(env->count?env->count:1,1);
+   if(!inner.assigned)return 0;
+   memcpy(inner.assigned,env->assigned,env->count);
+   int ok=jit_de_stmt_ok(n->children[branch],&inner);
+   free(inner.assigned);
+   if(!ok)return 0;
+  }
+  return 1;
+ }
+ return 0;
+}
+static int jit_definitely_assigned(const Node *body,Binding *slots,size_t used){
+ size_t cap=used?used:1;
+ const char **names=calloc(cap,sizeof(char*));
+ unsigned char *assigned=calloc(cap,1);
+ if(!names||!assigned){free(names);free(assigned);return 0;}
+ JitDefEnv env={.names=names,.assigned=assigned,.count=used};
+ for(size_t i=0;i<used;i++)names[i]=slots[i].name;
+ /* os slots de parâmetros chegam atribuídos (vindos dos argumentos) */
+ if(used)assigned[0]=1;
+ int ok=jit_de_stmt_ok(body,&env);
+ free(names);free(assigned);
+ return ok;
+}static void jit_compile_function(FunctionDef*f){
  if(!f||!f->node||strcmp(f->node->kind,"Function"))return;
  const Node*def=f->node,*params=def->count?def->children[0]:NULL,*body=def->count>1?def->children[1]:NULL;
  if(!params||params->count!=1||!params->children[0]->value||!body)return;
@@ -1143,6 +1226,7 @@ static void jit_compile_function(FunctionDef*f){
  size_t used=0;slots[used++].name=params->children[0]->value;
  collect_slot_names(body,slots,&used,cap);
  annotate_slot_nodes((Node*)body,slots,used,def);
+ if(!jit_definitely_assigned(body,slots,used)){free(slots);return;}
  int has_return=0,requires_range=0;JitBuffer b={0};
  jit_append(&b,"#include <limits.h>\nlong long pifari_jit(long long arg0) { long long v[%zu]={0}; v[0]=arg0;\n",used?used:1);
  if(!jit_stmt(&b,body,def,&has_return,&requires_range)||!has_return||b.failed){free(b.s);free(slots);return;}
@@ -1266,6 +1350,7 @@ static int bc_ensure_function(const Node*definition,const Node*body){
  int ok=m->function_code_supported;pthread_mutex_unlock(&bytecode_compile_mutex);return ok;
 }
 static Value execute_function_bytecode(const Node*definition,const Node*call){
+ const Node*n=call;
  size_t code_count=definition->function_code_count,cap=code_count+1,sp=0,pc=0;
  Value local_stack[32];Value*stack=cap<=32?local_stack:calloc(cap,sizeof(Value));
  long long local_bounds[32]={0};
@@ -1311,10 +1396,10 @@ static Value execute_function_bytecode(const Node*definition,const Node*call){
      r=vbool(in.op==BC_LT?cmp<0:in.op==BC_LE?cmp<=0:in.op==BC_GT?cmp>0:cmp>=0);free_value(a);free_value(b);stack[sp++]=r;pc++;break;
     }
     if((a.type!=V_INT&&a.type!=V_FLOAT)||(b.type!=V_INT&&b.type!=V_FLOAT)){free_value(a);free_value(b);fail(call,"a VM de função exige operandos numéricos");break;}
-    if(in.op==BC_ADD&&a.type==V_INT&&b.type==V_INT)r=vint(a.as.i+b.as.i);
-    else if(in.op==BC_SUB&&a.type==V_INT&&b.type==V_INT)r=vint(a.as.i-b.as.i);
-    else if(in.op==BC_MUL&&a.type==V_INT&&b.type==V_INT)r=vint(a.as.i*b.as.i);
-    else {double x=number(a,call),y=number(b,call);if(in.op==BC_ADD)r=vfloat(x+y);else if(in.op==BC_SUB)r=vfloat(x-y);else if(in.op==BC_MUL)r=vfloat(x*y);else if(in.op==BC_DIV){if(y==0)fail(call,"divisão por zero");else r=vfloat(x/y);}else if(in.op==BC_IDIV){if(y==0)fail(call,"divisão por zero");else r=(a.type==V_INT&&b.type==V_INT)?vint(a.as.i/b.as.i):vint((long long)floor(x/y));}else if(in.op==BC_MOD){if(y==0)fail(call,"divisão por zero");else r=vint((long long)x%(long long)y);}else r=vfloat(pow(x,y));}
+    if(in.op==BC_ADD&&a.type==V_INT&&b.type==V_INT){long long z;if(__builtin_add_overflow(a.as.i,b.as.i,&z))fail(n,"overflow de inteiro na soma");else r=vint(z);}
+    else if(in.op==BC_SUB&&a.type==V_INT&&b.type==V_INT){long long z;if(__builtin_sub_overflow(a.as.i,b.as.i,&z))fail(n,"overflow de inteiro na subtracao");else r=vint(z);}
+    else if(in.op==BC_MUL&&a.type==V_INT&&b.type==V_INT){long long z;if(__builtin_mul_overflow(a.as.i,b.as.i,&z))fail(n,"overflow de inteiro na multiplicacao");else r=vint(z);}
+    else {double x=number(a,call),y=number(b,call);if(in.op==BC_ADD)r=vfloat(x+y);else if(in.op==BC_SUB)r=vfloat(x-y);else if(in.op==BC_MUL)r=vfloat(x*y);else if(in.op==BC_DIV){if(y==0)fail(call,"divisão por zero");else r=vfloat(x/y);}else if(in.op==BC_IDIV){if(y==0)fail(call,"divisão por zero");else r=(a.type==V_INT&&b.type==V_INT)?vint(a.as.i/b.as.i):vint((long long)(x/y));}else if(in.op==BC_MOD){if(y==0)fail(call,"divisão por zero");else r=vint((long long)x%(long long)y);}else r=vfloat(pow(x,y));}
     free_value(a);free_value(b);if(!runtime_failed)stack[sp++]=r;else free_value(r);pc++;break;
    case BC_STORE_SLOT:{
     LocalFrame*f=find_owner_frame(in.slot_owner);if(!f||in.i<0||(size_t)in.i>=f->count||!sp){fail(call,"slot de escrita inválido");break;}
@@ -2313,7 +2398,7 @@ static void exec_node(const Node*n){
   return;
  }
  if(!strcmp(n->kind,"Break")||!strcmp(n->kind,"Continue")){fail(n,"%s ainda não é suportado pelo runtime",n->kind);return;}
- if(!strcmp(n->kind,"Import")||!strcmp(n->kind,"Include")||!strcmp(n->kind,"LinkTo")){fprintf(stderr,"Pifari:%d:%d: aviso: diretiva '%s' reconhecida, mas carregamento/linkagem ainda não implementado\n",n->line,n->column,n->kind);return;}
+ if(!strcmp(n->kind,"Import")||!strcmp(n->kind,"Include")||!strcmp(n->kind,"LinkTo")){fail(n,"diretiva '%s' não é suportada nesta versão; remova-a ou aguarde implementação",n->kind);return;}
  if(!strcmp(n->kind,"Class")){fail(n,"classes são reconhecidas pelo parser, mas objetos e métodos ainda não são executáveis");return;}
  (void)eval(n);
 }

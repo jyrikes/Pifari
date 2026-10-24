@@ -1,58 +1,46 @@
-# EXECUCAO — checkpoint do plano de concorrência
+# EXECUCAO — checkpoint do plano de tipos e otimização
 
 Atualizado ao fim de cada sessão. Ao retomar: ler **só este arquivo** + `git log --oneline -5`
-e `git status --short`. Não reler `runtime.c` inteiro.
+e `git status --short`. Não reler `runtime.c` inteiro (2421 linhas).
 
 ## Estado
 
-- **Etapa atual:** E7 — polimento e regressão final (E0–E6 concluídas)
-- **Último teste verde:** `FULL_SUITE_OK` com 30 `.pif` + 5 binários C (inclui `conc_shared.pif`)
-- **Plano completo:** `docs/SPEC_CONCORRENCIA.md` (normativo)
+- **Etapa atual:** F1 — tipos (F0 concluída)
+- **Último teste verde:** `FULL_SUITE_OK` (30 `.pif` + 5 binários C) após as mudanças de F0
+- **Plano completo:** F0–F5 aprovado; semântica em `docs/SPEC_SEMANTICA.md`
 
-## Concluído
+## Concluído — F0 (semântica e coerência)
 
-- **E0** — `docs/SPEC_CONCORRENCIA.md` (C1–C12) e §231–238 do `Definicao_Pifari_v3.tex`.
-- **E1** — iterador isolado; `>|` com expressão arbitrária; falha por índice; sem deadlock no
-  aninhamento; `error_message` por thread.
-- **E2** — `modo_processos(n)`/`modo_threads()`; fork + contador `mmap(MAP_SHARED)`; resultado
-  por pipe; `poll()` + timeout; guarda de fork por `/proc/self/status`.
-- **E3** — `backend/devices.[ch]`, `tools/pifari_worker.py`, `dispositivos()`/`usar(id)`, `test-gpu`.
-- **E4** — `backend/gpu_client.[ch]`; `map_affine_relu` na Iris Xe com fallback; benchmark em
-  `docs/BENCHMARKS_GPU.md` (GPU perde ~7–8× por transporte; `auto` = CPU).
-- **E5** — `spawn`/`await` prefixos + `cancelar(id)`; cancelamento cooperativo nos três caminhos
-  (exec_block, For de exec_node, VM de função). Tarefa de ~2 s termina em 69 ms após cancelar.
-- **E6** — `compartilhado`/`ler`/`escrever`/`incrementar` com mutex por célula; 4 tarefas × 1000
-  incrementos = **4000** (sem atualização perdida). Verificado também: escrita dentro de função
-  não altera o escopo externo (`acc` continua 100), então o erro de "escrita externa" do §3.3 é
-  inalcançável por construção hoje — o comportamento seguro é o padrão.
+- `docs/SPEC_SEMANTICA.md`: ordem de avaliação, int64 com overflow = erro, float IEEE-754
+  sem reassociação, listas por valor, taxonomia de erros, contrato do otimizador (§8).
+- **JIT corrigido**: o C gerado inicializava slots em 0 e mudava o resultado
+  (`acc = acc + x` dava 5 em vez de 105). Agora `jit_definitely_assigned` só compila funções
+  com atribuição definida. Função puramente local continua 400× mais rápida (36 µs vs 14,6 ms).
+- **Overflow detectável** nos três caminhos (interpretador, bytecode, VM de função).
+- **`//` e `%` consistentes** (truncamento para zero): `-7 // 2 == -3`, `-7 % 2 == -1`.
+- **Diretivas** `import`/`#include`/`Link to` falham com erro semântico; `dict` saiu do léxico.
+- Matriz de construtores atualizada em `docs/STATUS_REAL.md`.
 
-## Próximos passos (E7)
+## Próximos 3 passos (F1)
 
-1. `Makefile`: `test-core` (C + todos os `.pif` menos o orquestrador de Reels), `test-conc`
-   (conc_*.pif), manter `test-gpu`.
-2. Rodar `make test-core`, `make test-conc`, `make test-gpu` e registrar os resultados.
-3. Atualizar `README.md` (tabela de estado) e fechar o checkpoint.
-
-## Observação registrada (não introduzida por este trabalho)
-
-Dentro de função, um nome atribuído que coincide com variável externa é tratado como slot
-local inicializado em `Null` (que vira 0 na aritmética) em vez de herdar o valor externo.
-É semântica de função pré-existente; fica anotada para revisão futura, fora do escopo da
-concorrência.
+1. `backend/types.h`: `PifariType` + `PifariTypeDesc`; `Node.type_ann`, `Binding.kind`.
+2. Gramática: parâmetro tipado (`a: int`), retorno (`function f(...) -> tipo`, usando o
+   `ARROW` que já é lexado), tipo de coleção (`list(int)`); manter `%expect 7`.
+3. `backend/typecheck.[ch]`: passada estática (nomes, duplicatas, aridade/tipos de chamada,
+   `break`/`continue`, `await`, retorno) + verificação dinâmica em atribuição tipada;
+   `PIFARI_CHECK=1`/`--check` sai com 2 em erro.
 
 ## Decisões (não reabrir)
 
-- `spawn`/`await` são expressões prefixas (`t = spawn f()`).
-- Cancelamento exige checagem nos três caminhos de execução — os três estão cobertos.
-- `|<` agrega e liga ao nome à direita; forma expressiva adiada (16 conflitos shift/reduce).
-- GPU em `float`; `auto` = CPU por medição; handles/resident buffers ficam pós-E7.
-- `make test` puro não é usado em iteração (chama o orquestrador de Reels e gasta quota Gemini).
+- Overflow = erro (spec §180). F3 pode remover a checagem em laço com prova de intervalo.
+- `->` é tipo de retorno (token já existia reservado).
+- Lista tem semântica de valor; não mexer (30 exemplos dependem).
+- Classes, closures, módulos e GC fora de escopo.
+- O JIT só compila com atribuição definida até receber os slots iniciais por parâmetro.
 
 ## Arquivos tocados
 
-- `backend/runtime.c` (E1–E6), `backend/devices.[ch]`, `backend/gpu_client.[ch]`,
-  `tools/pifari_worker.py`, `frontend/parser.y`, `frontend/lexer.l`
-- `examples/conc_fluxos.pif`, `conc_processos.pif`, `conc_tarefas.pif`, `conc_shared.pif`,
-  `gpu_dispositivos.pif`, `gpu_affine.pif`
-- `Makefile`, `docs/SPEC_CONCORRENCIA.md`, `docs/BENCHMARKS_GPU.md`, `docs/EXECUCAO.md`
-- `../Definicao_Pifari_v3.tex`
+- `backend/runtime.c` (F0), `frontend/lexer.l`
+- `docs/SPEC_SEMANTICA.md` (novo), `docs/STATUS_REAL.md`, `docs/EXECUCAO.md`
+- `backend/devices.[ch]`, `backend/gpu_client.[ch]`, `tools/pifari_worker.py` (ciclo anterior)
+- `docs/SPEC_CONCORRENCIA.md`, `docs/BENCHMARKS_GPU.md` (ciclo anterior)

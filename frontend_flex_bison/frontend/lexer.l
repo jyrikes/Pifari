@@ -67,7 +67,7 @@ STR (\"([^\\\"\n]|\\.)*\"|'([^\\'\n]|\\.)*')
 <INITIAL>"true" {return TRUE;}
 <INITIAL>"false" {return FALSE;}
 <INITIAL>"null"|"None" {return NULLVAL;}
-<INITIAL>"int"|"char"|"short"|"long"|"signed"|"unsigned"|"float"|"double"|"bool"|"void"|"txt"|"str"|"list"|"dict"|"array"|"Task"|"Agent" {yylval.str=copy_text(yytext,yyleng);return TYPE;}
+<INITIAL>"int"|"char"|"short"|"long"|"signed"|"unsigned"|"float"|"double"|"bool"|"void"|"txt"|"str"|"list"|"array"|"Task"|"Agent" {yylval.str=copy_text(yytext,yyleng);return TYPE;}
 <INITIAL>"==" {return EQ;}
 <INITIAL>"!=" {return NE;}
 <INITIAL>"<=" {return LE;}

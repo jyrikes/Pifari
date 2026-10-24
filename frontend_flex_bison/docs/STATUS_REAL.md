@@ -83,3 +83,35 @@ Dos 37 arquivos `.pif` em `examples/`, 25 estão em `make test`, 5 estão em `ma
 - **Parser/Lexer (`frontend/`):** Já reconhece `Task` e `Agent` como `TYPE` e transforma `Task(...)` / `Agent(...)` em nós `Call` sem precisar de novas palavras-chave que quebrem a gramática.
 - **Pool de Threads e Primitivas POSIX (`backend/runtime.c`):** Possui relógio monotônico (`monotonic_ns`, `monotonic_ms`), hash FNV-1a de 64 bits e `worker_pool` pthreads que podem coexistir com o `Agent Runtime`.
 - **Ponto de Acoplamento Limpo:** `backend/runtime.c` já é grande (1.312 linhas). Os 7 módulos de orquestração multiagente e o `MCP Gateway` devem residir em unidades de compilação próprias (`backend/mcp_gateway.[ch]`, `backend/agent_runtime.[ch]`) com uma ponte enxuta em `runtime.c` para despachar builtins de agentes/MCP sem inflar o núcleo numérico.
+
+---
+
+## Atualização 2026-10-24 (F0 — coerência de semântica)
+
+Matriz construtor × estado. "Erro explícito" significa que a construção é reconhecida e
+falha com mensagem semântica, nunca com aviso silencioso.
+
+| Construtor | Estado |
+|---|---|
+| `=:` com tipo | parseia; **tipo ainda não verificado** (entra na F1) |
+| `:=` (classe) | parseia; erro semântico ao executar |
+| `import` | erro semântico |
+| `#include` | erro semântico |
+| `Link to` | erro semântico |
+| `dict` | removido do léxico |
+| `break`/`continue` | erro em execução ("ainda não suportado") |
+| `A[i] = v` | implementado (gramática e runtime) |
+
+Correções aplicadas nesta rodada:
+
+1. **JIT não altera mais o resultado.** O C gerado inicializava todos os slots com 0; uma
+   função que lia um nome externo (`acc = acc + x`) dava `5` em vez de `105`. Agora o JIT só
+   compila funções com atribuição definida (toda leitura é de parâmetro ou de nome já
+   atribuído no fluxo linear). Funções puramente locais continuam 400× mais rápidas que o
+   interpretador (36 µs vs 14,6 ms em laço de 200 mil iterações).
+2. **Overflow de inteiro é erro detectável** (`__builtin_*_overflow`) nos três caminhos:
+   interpretador, VM de bytecode e VM de função.
+3. **`//` e `%` consistentes**: truncamento em direção a zero nos três caminhos
+   (`-7 // 2 == -3`, `-7 % 2 == -1`).
+4. **Diretivas não implementadas falham** em vez de avisar e seguir.
+5. Semântica observável documentada em `docs/SPEC_SEMANTICA.md`.
