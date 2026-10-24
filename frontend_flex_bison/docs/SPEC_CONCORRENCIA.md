@@ -31,18 +31,19 @@ Corolário: o modo de distribuição (`threads` ou `processos`) e o dispositivo 
 
 ### 2.1 A regra do `|<` (resolve a divergência spec ↔ implementação)
 
-`|<` é **uma barreira que produz a lista agregada**, e não uma instrução de atribuição.
-Por compatibilidade com os programas existentes, vale esta regra única:
-
-- se o operando à direita for um **identificador ainda não ligado** no escopo corrente,
-  ele recebe a lista agregada (forma de ligação); a expressão `|<` NÃO DEVE ser usada
-  como valor nesse caso;
-- caso contrário, a expressão `|<` **é** a lista agregada e PODE ser usada como valor.
+`|<` é **uma barreira que agrega** os resultados do fluxo à esquerda, em ordem de
+entrada, e **liga** essa lista ao identificador à direita. Agregar e ligar são o mesmo
+passo: não existe, por enquanto, forma puramente expressiva.
 
 ```
-resultados = [1, 2, 3] >| x >| dobro(x) |<    # forma de expressão (nova)
-[1, 2, 3] >| x >| dobro(x) |< resultados      # forma de ligação (existente)
+[1, 2, 3] >| x >| dobro(x) |< resultados   # resultados == [2, 4, 6]
 ```
+
+A forma de expressão (`total = fluxo |<`) foi **avaliada e adiada**: como o operando
+direito é uma expressão, `fluxo |< nome` fica ambíguo com `fluxo |< nome + 1` e a
+gramática LALR passou de 7 para 16 conflitos shift/reduce. Fechar isso exigiria um
+delimitador sintático próprio, o que contraria a filosofia de simplificação. Registrado
+em `docs/EXECUCAO.md` como próximo passo opcional.
 
 O agregado DEVE estar na ordem de entrada, nunca na ordem de término das tarefas.
 

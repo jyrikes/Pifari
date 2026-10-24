@@ -73,6 +73,12 @@ static _Thread_local Binding *binding_buckets[BINDING_BUCKETS];
 static _Thread_local int runtime_failed;
 static _Thread_local int return_active;
 static _Thread_local Value return_value;
+/* Estado de concorrência por thread: identifica quem já é trabalhador do pool
+   (para não recursar no pool e não mutar AST compartilhada) e carrega a última
+   mensagem de erro desta thread para atribuição por item. */
+static _Thread_local int in_worker;
+static _Thread_local int cancel_requested;
+static _Thread_local char error_message[256];
 /* Optional counters: disabled by default so normal execution pays only one branch. */
 static int profiling_enabled;
 static unsigned long long profile_eval_nodes, profile_binding_lookups, profile_value_copies, profile_bytecode_ops;
@@ -101,8 +107,11 @@ static long long monotonic_ns(void){struct timespec ts;if(clock_gettime(CLOCK_MO
 static void fail(const Node*n,const char*fmt,...){
  if(runtime_failed)return;
  runtime_failed=1;
+ va_list ap;va_start(ap,fmt);
+ vsnprintf(error_message,sizeof(error_message),fmt,ap);
+ va_end(ap);
  fprintf(stderr,"Pifari:%d:%d: erro de execução: ",n?n->line:1,n?n->column:1);
- va_list ap;va_start(ap,fmt);vfprintf(stderr,fmt,ap);va_end(ap);fputc('\n',stderr);
+ fputs(error_message,stderr);fputc('\n',stderr);
 }
 static void free_value(Value v){
  if(v.type==V_STRING)free(v.as.s);
@@ -1226,7 +1235,7 @@ static Value call_user_function(const Node *call,FunctionDef *fn_def){
   long long result=fn_def->jit_fn(arg);free_value(values[0]);if(values!=stack_values)free(values);
   return vint(result);
  }
- if(!fn_def->slots_ready)prepare_function_slots(fn_def);
+ if(!fn_def->slots_ready&&!in_worker)prepare_function_slots(fn_def);
  size_t used=fn_def->slot_count;
  LocalFrame stack_frame;
  Binding stack_slots[16];
@@ -1313,11 +1322,16 @@ static char *runtime_invoke_mcp_tool_cb(const char *fn_name,size_t argc,const ch
 typedef struct {
  size_t next, count;
  Value *items, *results;
+ char **errors;
  const Node *target, *variable, *at;
  Binding *base;
- pthread_mutex_t lock;
- int errors;
 } ParallelWork;
+/* Falha fica associada ao item que falhou (spec §240): guarda a mensagem no
+   índice correspondente em vez de abortar o fluxo inteiro. */
+static void record_parallel_error(ParallelWork*w,size_t index){
+ if(!w->errors||index>=w->count)return;
+ w->errors[index]=dup_string(error_message[0]?error_message:"erro não especificado");
+}
 /* Worker environments use shallow binding nodes: the base values are immutable
    during a flow, while loop variables and function locals live in slot frames. */
 static Binding *clone_bindings(Binding *src){
@@ -1338,20 +1352,40 @@ typedef struct {
 } PersistentPool;
 static PersistentPool worker_pool={.mutex=PTHREAD_MUTEX_INITIALIZER,.work_ready=PTHREAD_COND_INITIALIZER,.work_done=PTHREAD_COND_INITIALIZER};
 static void parallel_process_work(ParallelWork*w){
- globals=clone_bindings(w->base);rebuild_binding_index();runtime_failed=0;
+ globals=clone_bindings(w->base);rebuild_binding_index();runtime_failed=0;error_message[0]=0;
  Binding iteration_slot={.name=w->variable->value,.value={.type=V_NULL}};
  LocalFrame iteration_frame={.slots=&iteration_slot,.count=1};
  size_t iteration_hash=binding_hash(iteration_slot.name)&255u;
  iteration_frame.buckets[iteration_hash]=&iteration_slot;iteration_frame.parent=NULL;local_frame=&iteration_frame;
+ in_worker=1;
  for(;;){
   size_t i=__atomic_fetch_add(&w->next,1,__ATOMIC_RELAXED);
   if(i>=w->count)break;
+  if(cancel_requested)break;
   set_binding(w->variable->value,copy_value(w->items[i]),w->at,0);
-  w->results[i]=eval_call(w->target);
-  if(runtime_failed){pthread_mutex_lock(&w->lock);w->errors=1;pthread_mutex_unlock(&w->lock);runtime_failed=0;}
+  w->results[i]=eval(w->target);
+  if(runtime_failed){free_value(w->results[i]);w->results[i]=vnull();record_parallel_error(w,i);runtime_failed=0;}
  }
+ in_worker=0;
  free_value(iteration_slot.value);local_frame=NULL;
  free_binding_nodes(globals);globals=NULL;memset(binding_buckets,0,sizeof(binding_buckets));
+}
+/* Fluxo aninhado: chamado de dentro de um trabalhador, roda serialmente no próprio
+   trabalhador (não recursa no pool, o que travava) e reusa o ambiente já isolado. */
+static void run_work_serial(ParallelWork*w){
+ Binding iteration_slot={.name=w->variable->value,.value={.type=V_NULL}};
+ LocalFrame frame={.slots=&iteration_slot,.count=1};
+ frame.buckets[binding_hash(iteration_slot.name)&255u]=&iteration_slot;
+ frame.parent=local_frame;local_frame=&frame;
+ int saved_failed=runtime_failed;runtime_failed=0;error_message[0]=0;
+ for(size_t i=0;i<w->count;i++){
+  if(runtime_failed||cancel_requested)break;
+  free_value(iteration_slot.value);iteration_slot.value=copy_value(w->items[i]);
+  w->results[i]=eval(w->target);
+  if(runtime_failed){free_value(w->results[i]);w->results[i]=vnull();record_parallel_error(w,i);runtime_failed=0;}
+ }
+ free_value(iteration_slot.value);local_frame=frame.parent;
+ runtime_failed=saved_failed;
 }
 static void *persistent_worker(void*opaque){
  size_t worker_index=(size_t)(uintptr_t)opaque;unsigned long seen=0;
@@ -1378,6 +1412,7 @@ static void pool_initialize(void){
  pthread_mutex_unlock(&worker_pool.mutex);
 }
 static void pool_run(ParallelWork*w){
+ if(in_worker){run_work_serial(w);return;}
  pool_initialize();
  if(!worker_pool.started){parallel_process_work(w);return;}
  pthread_mutex_lock(&worker_pool.mutex);
@@ -1467,8 +1502,8 @@ static int try_native_map_flow(const Node *target, const Node *variable,
 
 static Value eval_parallel_flow(const Node *n){
  const Node *source=n->count>0?n->children[0]:NULL,*target=n->count>1?n->children[1]:NULL;
- if(!source||strcmp(source->kind,"Flow")||strcmp(source->value,">|")||source->count<2||!target||strcmp(target->kind,"Call")){
-  fail(n,"use o fluxo paralelo como iterável >| variável >| função(variável)");return vnull();
+ if(!source||strcmp(source->kind,"Flow")||strcmp(source->value,">|")||source->count<2||!target){
+  fail(n,"use o fluxo paralelo como iterável >| variável >| expressão");return vnull();
  }
  const Node *iterable=source->children[0],*variable=source->children[1];
  if(strcmp(variable->kind,"Name")){fail(n,"o nome após >| deve ser um identificador");return vnull();}
@@ -1490,11 +1525,22 @@ static Value eval_parallel_flow(const Node *n){
  }
  Value out=list_new(count);
  if(out.type!=V_LIST){if(seq.type!=V_LIST){for(size_t i=0;i<count;i++)free_value(items[i]);free(items);}free_value(seq);fail(n,"memória insuficiente para resultados paralelos");return vnull();}
- ParallelWork w={.next=0,.count=count,.items=items,.results=out.as.list.items,.target=target,.variable=variable,.at=n,.base=globals,.errors=0,.lock=PTHREAD_MUTEX_INITIALIZER};
+ char **errors=calloc(count?count:1,sizeof(char*));
+ ParallelWork w={.next=0,.count=count,.items=items,.results=out.as.list.items,.errors=errors,.target=target,.variable=variable,.at=n,.base=globals};
  if(count)pool_run(&w);
  if(seq.type!=V_LIST){for(size_t i=0;i<count;i++)free_value(items[i]);free(items);}
- free_value(seq);pthread_mutex_destroy(&w.lock);
- if(w.errors&&!runtime_failed)fail(n,"uma ou mais tarefas paralelas falharam");
+ free_value(seq);
+ size_t first_bad=0;char *first_msg=NULL;
+ for(size_t i=0;i<count;i++){
+  if(!errors[i])continue;
+  if(!first_msg){first_msg=errors[i];first_bad=i;}
+  else free(errors[i]);
+ }
+ free(errors);
+ if(first_msg){
+  if(!runtime_failed)fail(n,"fluxo paralelo falhou no índice %zu: %s",first_bad,first_msg);
+  free(first_msg);
+ }
  return out;
 }
 /* Resolve nested list indexing without deep-copying each intermediate matrix row.
@@ -1574,25 +1620,44 @@ static Value eval(const Node*n){
   return eval(n->children[1]);
  }
  if(!strcmp(n->kind,"Flow")&&!strcmp(n->value,"|<")){
-  if(n->count<2||strcmp(n->children[1]->kind,"Name")){fail(n,"use |< nome_da_colecao para guardar os resultados");return vnull();}
   Value collected=eval(n->children[0]);if(runtime_failed){free_value(collected);return vnull();}
   if(collected.type!=V_LIST){free_value(collected);fail(n,"|< só pode coletar os resultados de um fluxo que retorna uma lista");return vnull();}
+  /* Agregação com ligação (SPEC_CONCORRENCIA §2.1): a barreira produz a lista e a
+     liga ao nome à direita. A forma puramente expressiva fica adiada porque exigiria
+     um delimitador sintático; ver docs/EXECUCAO.md. */
+  if(n->count<2||strcmp(n->children[1]->kind,"Name")){free_value(collected);fail(n,"use |< nome_da_colecao para guardar os resultados");return vnull();}
   set_node_binding(n,n->children[1]->value,collected,n);return vnull();
  }
  if(!strcmp(n->kind,"Flow")&&!strcmp(n->value,"|>")){
   const Node *source=n->count>0?n->children[0]:NULL,*target=n->count>1?n->children[1]:NULL;
-  if(!source||strcmp(source->kind,"Flow")||strcmp(source->value,"|>")||source->count<2||!target||strcmp(target->kind,"Call")){
-   fail(n,"use o fluxo como iterável |> variável |> função(variável)");return vnull();
+  if(!source||strcmp(source->kind,"Flow")||strcmp(source->value,"|>")||source->count<2||!target){
+   fail(n,"use o fluxo como iterável |> variável |> expressão");return vnull();
   }
   const Node *iterable_node=source->children[0],*variable_node=source->children[1];
   if(strcmp(variable_node->kind,"Name")){fail(n,"o nome após |> deve ser um identificador");return vnull();}
   Value seq=eval(iterable_node);
-  if(seq.type==V_LIST){Binding *loop_binding=find_binding(variable_node->value);for(size_t i=0;i<seq.as.list.count&&!runtime_failed;i++){loop_binding=set_loop_binding(loop_binding,variable_node->value,copy_value(seq.as.list.items[i]),n);(void)eval_call(target);}}
-  else if(seq.type==V_F64_ARRAY){Binding *loop_binding=find_binding(variable_node->value);for(size_t i=0;i<seq.as.array->length&&!runtime_failed;i++){loop_binding=set_loop_binding(loop_binding,variable_node->value,vfloat(seq.as.array->data[i]),n);(void)eval_call(target);}}
-  else if(seq.type==V_RANGE){Binding *loop_binding=find_binding(variable_node->value);for(long long i=0;i<seq.as.range_end&&!runtime_failed;i++){loop_binding=set_loop_binding(loop_binding,variable_node->value,vint(i),n);(void)eval_call(target);}}
-  else if(seq.type==V_STRING){Binding *loop_binding=find_binding(variable_node->value);for(size_t i=0;seq.as.s[i]&&!runtime_failed;i++){char c[2]={seq.as.s[i],0};loop_binding=set_loop_binding(loop_binding,variable_node->value,vstr(c),n);(void)eval_call(target);}}
-  else fail(n,"o lado esquerdo do fluxo deve ser uma lista, array tipado, texto ou range");
-  free_value(seq);return vnull();
+  if(runtime_failed){free_value(seq);return vnull();}
+  size_t seq_count=seq.type==V_LIST?seq.as.list.count:seq.type==V_F64_ARRAY?seq.as.array->length:
+                   seq.type==V_STRING?strlen(seq.as.s):seq.type==V_RANGE?(size_t)seq.as.range_end:0;
+  if(seq.type!=V_LIST&&seq.type!=V_F64_ARRAY&&seq.type!=V_STRING&&seq.type!=V_RANGE){
+   fail(n,"o lado esquerdo do fluxo deve ser uma lista, array tipado, texto ou range");free_value(seq);return vnull();
+  }
+  /* Mesma regra de escopo do fluxo paralelo: a variável de iteração vive em um
+     frame próprio e não vaza para o chamador (SPEC_CONCORRENCIA §3). */
+  Binding iteration_slot={.name=variable_node->value,.value={.type=V_NULL}};
+  LocalFrame frame={.slots=&iteration_slot,.count=1};
+  frame.buckets[binding_hash(iteration_slot.name)&255u]=&iteration_slot;
+  frame.parent=local_frame;local_frame=&frame;
+  for(size_t i=0;i<seq_count&&!runtime_failed&&!cancel_requested;i++){
+   free_value(iteration_slot.value);iteration_slot.value=vnull();
+   if(seq.type==V_LIST)iteration_slot.value=copy_value(seq.as.list.items[i]);
+   else if(seq.type==V_F64_ARRAY)iteration_slot.value=vfloat(seq.as.array->data[i]);
+   else if(seq.type==V_RANGE)iteration_slot.value=vint((long long)i);
+   else {char c[2]={seq.as.s[i],0};iteration_slot.value=vstr(c);}
+   (void)eval(target);
+  }
+  free_value(iteration_slot.value);local_frame=frame.parent;free_value(seq);
+  return vnull();
  }
  fail(n,"expressão não suportada: %s",n->kind);return vnull();
 }

@@ -74,6 +74,7 @@ test: pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent
 	./pifari examples/fluxo_paralelo.pif
 	./pifari examples/fluxo_coleta.pif
 	./pifari examples/fluxo_sincronizacao.pif
+	./pifari examples/conc_fluxos.pif
 	./pifari examples/funcoes.pif
 	./pifari examples/nova_sintaxe_fluxo.pif
 	./pifari examples/paralelismo_assincrono.pif

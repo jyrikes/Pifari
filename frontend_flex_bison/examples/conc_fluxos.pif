@@ -1,0 +1,24 @@
+@ Conformidade de fluxos (docs/SPEC_CONCORRENCIA.md §2-3)
+@ Fluxo paralelo e sequencial devem produzir o mesmo resultado observavel,
+@ o iterador nao deve vazar e o aninhamento nao pode travar.
+
+xs = [1, 2, 3, 4]
+
+function dobro(x)
+  return x * 2
+
+xs >| x >| dobro(x) |< paralelo
+print(paralelo)
+
+acumulado = []
+for n in xs
+  acumulado = acumulado + [dobro(n)]
+print(acumulado)
+
+function aninhado(x)
+  ys = [1, 2]
+  ys >| y >| dobro(y) |< r
+  return len(r)
+
+xs >| x >| aninhado(x) |< aninhados
+print(aninhados)
