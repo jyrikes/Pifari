@@ -21,7 +21,7 @@ static char *join_path(char*a,char*b){size_t n=strlen(a)+strlen(b)+2;char*p=mall
 %token LPAREN RPAREN LBRACE RBRACE LBRACKET RBRACKET COMMA DOT COLON
 %token PLUS MINUS STAR SLASH IDIV PERCENT POWER EQ NE LT LE GT GE AND OR NOT
 %token PIPE APPLY FANOUT JOIN ARROW
-%type <node> program lines statement simple_statement compound_statement suite expr primary arguments_opt arguments optional_expr type_expr parameters_opt parameters
+%type <node> program lines statement simple_statement compound_statement suite expr primary arguments_opt arguments optional_expr type_expr parameters_opt parameters param
 %type <str> include_path
 %precedence STMT_END
 %left OR
@@ -83,6 +83,7 @@ include_path: IDENTIFIER {$$=$1;} | include_path DOT IDENTIFIER {$$=join_path($1
 optional_expr: %empty {$$=NULL;} | expr {$$=$1;};
 compound_statement:
  FUNCTION IDENTIFIER LPAREN parameters_opt RPAREN suite {$$=node_pair("Function",$2,$4,$6,@1.first_line,@1.first_column);free($2);}
+ | FUNCTION IDENTIFIER LPAREN parameters_opt RPAREN ARROW type_expr suite {Node*fn=node_pair("Function",$2,$4,$8,@1.first_line,@1.first_column);node_add(fn,$7);$$=fn;free($2);}
  | IDENTIFIER COLON LPAREN parameters_opt RPAREN suite {$$=node_pair("FunctionExpr",$1,$4,$6,@1.first_line,@1.first_column);free($1);}
  | CLASS_DEF IDENTIFIER suite {$$=node_pair("Class",$2,$3,NULL,@1.first_line,@1.first_column);free($2);}
  | IF expr suite {$$=node_pair("If",NULL,$2,$3,@1.first_line,@1.first_column);}
@@ -136,7 +137,8 @@ primary:
  | TYPE LPAREN arguments_opt RPAREN {$$=node_pair("Call",$1,$3,NULL,@1.first_line,@1.first_column);free($1);}
 ;
 parameters_opt: %empty {$$=node_new("Parameters",NULL,@$.first_line,@$.first_column);} | parameters {$$=$1;};
-parameters: IDENTIFIER {$$=node_add(node_new("Parameters",NULL,@1.first_line,@1.first_column),node_new("Name",$1,@1.first_line,@1.first_column));free($1);} | parameters COMMA IDENTIFIER {$$=node_add($1,node_new("Name",$3,@3.first_line,@3.first_column));free($3);};
+param: IDENTIFIER {$$=node_new("Name",$1,@1.first_line,@1.first_column);free($1);} | IDENTIFIER COLON type_expr {$$=node_pair("Param",$1,$3,NULL,@1.first_line,@1.first_column);free($1);};
+parameters: param {$$=node_add(node_new("Parameters",NULL,@1.first_line,@1.first_column),$1);} | parameters COMMA param {$$=node_add($1,$3);};
 arguments_opt: %empty {$$=node_new("Arguments",NULL,@$.first_line,@$.first_column);} | arguments {$$=$1;};
 arguments: expr {$$=node_add(node_new("Arguments",NULL,@1.first_line,@1.first_column),$1);} | arguments COMMA expr {$$=node_add($1,$3);};
 type_expr: TYPE {$$=node_new("Type",$1,@1.first_line,@1.first_column);free($1);} | IDENTIFIER {$$=node_new("Type",$1,@1.first_line,@1.first_column);free($1);};

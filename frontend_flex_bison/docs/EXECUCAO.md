@@ -1,46 +1,53 @@
 # EXECUCAO — checkpoint do plano de tipos e otimização
 
 Atualizado ao fim de cada sessão. Ao retomar: ler **só este arquivo** + `git log --oneline -5`
-e `git status --short`. Não reler `runtime.c` inteiro (2421 linhas).
+e `git status --short`. Não reler `runtime.c` inteiro (~2500 linhas).
 
 ## Estado
 
-- **Etapa atual:** F1 — tipos (F0 concluída)
-- **Último teste verde:** `FULL_SUITE_OK` (30 `.pif` + 5 binários C) após as mudanças de F0
-- **Plano completo:** F0–F5 aprovado; semântica em `docs/SPEC_SEMANTICA.md`
+- **Etapa atual:** F1c — `typecheck` estático + `--check` (F0, F1a e F1b concluídas)
+- **Último teste verde:** `make test-core` exit 0 (31 `.pif` + 5 binários C) após F1b
+- **Plano:** F0–F5; semântica em `docs/SPEC_SEMANTICA.md`
 
-## Concluído — F0 (semântica e coerência)
+## Concluído
 
-- `docs/SPEC_SEMANTICA.md`: ordem de avaliação, int64 com overflow = erro, float IEEE-754
-  sem reassociação, listas por valor, taxonomia de erros, contrato do otimizador (§8).
-- **JIT corrigido**: o C gerado inicializava slots em 0 e mudava o resultado
-  (`acc = acc + x` dava 5 em vez de 105). Agora `jit_definitely_assigned` só compila funções
-  com atribuição definida. Função puramente local continua 400× mais rápida (36 µs vs 14,6 ms).
-- **Overflow detectável** nos três caminhos (interpretador, bytecode, VM de função).
-- **`//` e `%` consistentes** (truncamento para zero): `-7 // 2 == -3`, `-7 % 2 == -1`.
-- **Diretivas** `import`/`#include`/`Link to` falham com erro semântico; `dict` saiu do léxico.
-- Matriz de construtores atualizada em `docs/STATUS_REAL.md`.
+- **F0** — `SPEC_SEMANTICA.md`; JIT com atribuição definida (corrigiu `acc = acc + x` que
+  devolvia 5 em vez de 105); overflow detectável nos 3 caminhos; `//` e `%` truncando para
+  zero; diretivas não implementadas falham; `dict` fora do léxico.
+- **F1a** — `backend/types.[ch]`: `PifariType`, `pifari_type_from_name`, `pifari_type_assignable`
+  (promoção `int -> float`); `Binding.kind`; `=:` verificado em execução; tipo desconhecido
+  falha (`tipo desconhecido: 'dict'`); `examples/tipos.pif`.
+- **F1b** — gramática de parâmetro tipado (`a: int`) e retorno (`-> tipo`) usando `ARROW`;
+  checagem de argumento e de retorno com promoção e erro nomeando parâmetro/função.
+  JIT desligado para funções anotadas (o C gerado não carrega tipos ainda).
 
-## Próximos 3 passos (F1)
+## Próximos 3 passos (F1c)
 
-1. `backend/types.h`: `PifariType` + `PifariTypeDesc`; `Node.type_ann`, `Binding.kind`.
-2. Gramática: parâmetro tipado (`a: int`), retorno (`function f(...) -> tipo`, usando o
-   `ARROW` que já é lexado), tipo de coleção (`list(int)`); manter `%expect 7`.
-3. `backend/typecheck.[ch]`: passada estática (nomes, duplicatas, aridade/tipos de chamada,
-   `break`/`continue`, `await`, retorno) + verificação dinâmica em atribuição tipada;
-   `PIFARI_CHECK=1`/`--check` sai com 2 em erro.
+1. `backend/typecheck.[ch]`: passada sobre a AST antes de executar — nomes não declarados,
+   declaração duplicada, `break`/`continue` fora de laço, `await` de não-tarefa, aridade
+   quando a função tem parâmetros tipados.
+2. `PIFARI_CHECK=1` / `--check`: só valida, imprime diagnósticos e sai com 2 em erro.
+   Ligar em `make check-core` sobre os exemplos (todos devem passar).
+3. `PIFARI_STRICT=1`: condição exige `bool` (hoje aceita truthiness); documentar no §5 do
+   `SPEC_SEMANTICA.md` como opção.
+
+## Observações
+
+- `examples/teste_cliente_servidor_mcp_pifari.pif` é **flaky** (timeout do mock MCP em
+  `mcp_discover_tools`); passou 3/3 na repetição. Não é regressão. F5 deve dar retry ou
+  timeout maior nesse teste.
+- JIT só compila função sem anotação, com 1 parâmetro, sem leitura de nome não atribuído.
+- Binários `.o`, `pifari`, `parser.tab.c`, `lex.yy.c` continuam como artefatos não commitados.
 
 ## Decisões (não reabrir)
 
-- Overflow = erro (spec §180). F3 pode remover a checagem em laço com prova de intervalo.
-- `->` é tipo de retorno (token já existia reservado).
-- Lista tem semântica de valor; não mexer (30 exemplos dependem).
-- Classes, closures, módulos e GC fora de escopo.
-- O JIT só compila com atribuição definida até receber os slots iniciais por parâmetro.
+- Overflow = erro; `->` = tipo de retorno; lista = valor; classes/closures/módulos/GC fora.
+- Tipos de função só com `function`; a forma `nome : (params) { }` continua sem anotação.
+- `Param` é um nó com `value` = nome e filho `Type`, para não quebrar código que lê
+  `params->children[i]->value`.
 
 ## Arquivos tocados
 
-- `backend/runtime.c` (F0), `frontend/lexer.l`
-- `docs/SPEC_SEMANTICA.md` (novo), `docs/STATUS_REAL.md`, `docs/EXECUCAO.md`
-- `backend/devices.[ch]`, `backend/gpu_client.[ch]`, `tools/pifari_worker.py` (ciclo anterior)
-- `docs/SPEC_CONCORRENCIA.md`, `docs/BENCHMARKS_GPU.md` (ciclo anterior)
+- `backend/types.[ch]` (novo), `backend/runtime.c`, `frontend/parser.y`, `frontend/lexer.l`
+- `docs/SPEC_SEMANTICA.md`, `docs/STATUS_REAL.md`, `docs/EXECUCAO.md`
+- `examples/tipos.pif` (novo)

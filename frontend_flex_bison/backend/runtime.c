@@ -1235,6 +1235,8 @@ static int jit_definitely_assigned(const Node *body,Binding *slots,size_t used){
  if(!f||!f->node||strcmp(f->node->kind,"Function"))return;
  const Node*def=f->node,*params=def->count?def->children[0]:NULL,*body=def->count>1?def->children[1]:NULL;
  if(!params||params->count!=1||!params->children[0]->value||!body)return;
+ if(def->count>2)return;
+ for(size_t pi=0;pi<params->count;pi++)if(!strcmp(params->children[pi]->kind,"Param"))return;
  size_t cap=count_nodes(body)+params->count;
  Binding*slots=calloc(cap?cap:1,sizeof(Binding));if(!slots)return;
  size_t used=0;slots[used++].name=params->children[0]->value;
@@ -1468,6 +1470,19 @@ static Value call_user_function(const Node *call,FunctionDef *fn_def){
  Value *values=ac<=8?stack_values:calloc(ac?ac:1,sizeof(Value));
  if(!values){fail(call,"memória insuficiente nos argumentos");return vnull();}
  for(size_t i=0;i<ac;i++){values[i]=eval(args->children[i]);if(runtime_failed){for(size_t j=0;j<=i;j++)free_value(values[j]);if(values!=stack_values)free(values);return vnull();}}
+ for(size_t i=0;i<pc&&i<ac&&params;i++){
+  const Node*param=params->children[i];
+  if(!param||strcmp(param->kind,"Param")||!param->count)continue;
+  const Node*tn=param->children[0];
+  if(!tn||strcmp(tn->kind,"Type"))continue;
+  if(!pifari_type_is_known(tn->value)){fail(call,"tipo de parâmetro desconhecido: '%s'",tn->value?tn->value:"?");break;}
+  PifariType want=pifari_type_from_name(tn->value);
+  PifariType got=value_type_of(values[i]);
+  int compat=pifari_type_assignable(want,got);
+  if(!compat){fail(call,"parâmetro '%s' de '%s' espera %s, recebeu %s",param->value,definition->value,pifari_type_name(want),pifari_type_name(got));break;}
+  if(compat==2&&values[i].type==V_INT)values[i]=vfloat((double)values[i].as.i);
+ }
+ if(runtime_failed){for(size_t j=0;j<ac;j++)free_value(values[j]);if(values!=stack_values)free(values);return vnull();}
  if(fn_def->jit_fn&&ac==1&&values[0].type==V_INT){
   long long arg=values[0].as.i;
   if(fn_def->jit_requires_range&&(arg<0||arg>1000000)){free_value(values[0]);if(values!=stack_values)free(values);fail(call,"range aceita inteiro entre 0 e 1000000");return vnull();}
@@ -1508,6 +1523,18 @@ static Value call_user_function(const Node *call,FunctionDef *fn_def){
  }else exec_node(body);
  Value result=return_active?return_value:implicit_result;
  if(!return_active)free_value(return_value);
+ if(definition->count>2&&definition->children[2]&&!strcmp(definition->children[2]->kind,"Type")&&!runtime_failed){
+  const Node*ret_node=definition->children[2];
+  if(!pifari_type_is_known(ret_node->value)){
+   fail(call,"tipo de retorno desconhecido: '%s'",ret_node->value?ret_node->value:"?");
+  }else{
+   PifariType want=pifari_type_from_name(ret_node->value);
+   PifariType got=value_type_of(result);
+   int compat=pifari_type_assignable(want,got);
+   if(!compat)fail(call,"função '%s' declara retorno %s, devolveu %s",definition->value,pifari_type_name(want),pifari_type_name(got));
+   else if(compat==2&&result.type==V_INT)result=vfloat((double)result.as.i);
+  }
+ }
  local_frame=saved_frame;
  for(size_t i=0;i<used;i++)free_value(frame->slots[i].value);
  if(frame->slots!=stack_slots)free(frame->slots);

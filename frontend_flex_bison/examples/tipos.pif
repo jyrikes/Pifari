@@ -18,3 +18,17 @@ print("sem inicializador:", depois)
 contador =: int(0)
 contador = contador + 1
 print("atribuicao posterior:", contador)
+
+@ Funções com parâmetros e retorno tipados (F1b)
+function soma(a: int, b: int) -> int
+  return a + b
+
+function metade(x: float) -> float
+  return x / 2
+
+function total() -> float
+  return 3
+
+print("soma tipada:", soma(2, 3))
+print("parametro promovido:", metade(5))
+print("retorno promovido:", total())
