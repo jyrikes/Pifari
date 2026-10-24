@@ -183,3 +183,39 @@ Nenhuma divergência atribuída a otimização.
 
 `examples/orquestrador_reels_aistudio.pif` chama a API do Gemini e consome quota. Ele não
 entra em `test-core`, `check-core` nem `test-equiv`.
+
+---
+
+## 13. Cache de aquecimento (F4)
+
+Diretório: `$PIFARI_CACHE_DIR` > `$XDG_CACHE_HOME/pifari` > `$HOME/.cache/pifari`.
+Subdiretórios `jit/` e `kernels/` (criados com `0700`). `PIFARI_WARMUP=off` desliga
+(nada é lido nem escrito; cai para `/tmp`).
+
+Conteúdo:
+- `jit/<hash>.so` — módulo compilado pelo JIT, indexado pelo hash do C gerado;
+- `kernels/<hash>.so` — kernel nativo fundido;
+- `warmup.txt` — manifesto por função:
+  ```
+  version 1
+  fn <nome> <fingerprint> <chamadas> <tempo_ns>
+  ```
+
+Comportamento:
+1. Na inicialização o manifesto é lido uma vez; cada função registrada procura seu
+   `fingerprint`. Se casar, herda `chamadas` e `tempo_ns` da execução anterior e entra no
+   JIT **na primeira chamada** (log: `aquecida pelo manifesto`).
+2. No encerramento o manifesto é reescrito de forma atômica (`tmp` + `rename`).
+3. `.so` só é reutilizado se o hash do código gerado bater; corpo alterado gera hash novo e
+   recompila. Manifesto velho **nunca** muda resultado — no máximo adia ou adianta a
+   compilação.
+
+Medição (laço de 200 mil iterações × 20 chamadas):
+
+| Execução | Tempo |
+|---|---:|
+| Fria (sem cache) | 2 572 ms |
+| Morna (manifesto + `.so`) | **33 ms** |
+
+Ganho de ~78×, e é o que torna o tiering viável: sem manifesto, toda execução pagaria as
+primeiras chamadas interpretadas antes de compilar.

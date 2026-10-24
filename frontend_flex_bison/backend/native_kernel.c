@@ -1,5 +1,6 @@
 #define _GNU_SOURCE
 #include "native_kernel.h"
+#include "cache.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -116,10 +117,13 @@ int pifari_native_kernel_create(const PifariExprGraph *graph,
             "    output[i]=v%d;\n  }\n  return 0;\n}\n", graph->root);
     if (failed) { free(source); return -1; }
 
-    char cache_dir[128], cache_path[256];
-    snprintf(cache_dir, sizeof(cache_dir), "/tmp/pifari_kernel_cache_%lu",
-             (unsigned long)getuid());
-    int cache_ok = (mkdir(cache_dir, 0700) == 0 || errno == EEXIST);
+    char cache_dir[256], cache_path[320];
+    int cache_ok = (pifari_cache_subdir("kernels", cache_dir, sizeof(cache_dir)) == 0);
+    if (!cache_ok) {
+        snprintf(cache_dir, sizeof(cache_dir), "/tmp/pifari_kernel_cache_%lu",
+                 (unsigned long)getuid());
+        cache_ok = (mkdir(cache_dir, 0700) == 0 || errno == EEXIST);
+    }
     if (cache_ok) {
         struct stat st;
         if (stat(cache_dir, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != getuid())

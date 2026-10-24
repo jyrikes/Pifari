@@ -11,6 +11,7 @@
 #include "types.h"
 #include "effects.h"
 #include "plan.h"
+#include "cache.h"
 #include <errno.h>
 #include <math.h>
 #include <float.h>
@@ -61,6 +62,8 @@ typedef struct FunctionDef {
  void *jit_handle;
  long long (*jit_fn)(long long);
  int jit_requires_range;
+ unsigned long long calls; unsigned char jit_attempted;
+ unsigned long long time_ns;
  PifariExprGraph ir;
  int ir_ready;
  unsigned effects; unsigned char effects_ready;
@@ -121,6 +124,7 @@ static Binding *clone_bindings(Binding *src);
 static Binding *find_binding(const char *name);
 static Binding *node_target_binding(const Node *n, const char *name);
 static Value call_user_function(const Node *call, FunctionDef *fn_def);
+static Value call_user_function_inner(const Node *call, FunctionDef *fn_def);
 static char *runtime_invoke_mcp_tool_cb(const char *fn_name, size_t argc, const char **argv, int *out_is_error);
 static void jit_compile_function(FunctionDef *f);
 static void free_value(Value v);
@@ -1264,12 +1268,16 @@ static int jit_definitely_assigned(const Node *body,Binding *slots,size_t used){
  if(!jit_stmt(&b,body,def,&has_return,&requires_range)||!has_return||b.failed){free(b.s);free(slots);return;}
  jit_append(&b,"return 0; }\n");
  if(b.failed){free(b.s);free(slots);return;}
- char cache_dir[128],cachepath[256],cmd[768],dir_template[128],cpath[192],sopath[192];
- snprintf(cache_dir,sizeof(cache_dir),"/tmp/pifari_jit_cache_%lu",(unsigned long)getuid());
- if(mkdir(cache_dir,0700)!=0&&errno!=EEXIST){free(b.s);free(slots);return;}
- struct stat cache_stat;
- if(stat(cache_dir,&cache_stat)!=0||!S_ISDIR(cache_stat.st_mode)||cache_stat.st_uid!=getuid()){free(b.s);free(slots);return;}
- (void)chmod(cache_dir,0700);
+ char cache_dir[256],cachepath[320],cmd[768],dir_template[128],cpath[192],sopath[192];
+ /* F4: cache persistente (sobrevive a reboot), com queda para /tmp se o
+    diretório do usuário não estiver disponível. */
+ if(pifari_cache_subdir("jit",cache_dir,sizeof(cache_dir))!=0){
+  snprintf(cache_dir,sizeof(cache_dir),"/tmp/pifari_jit_cache_%lu",(unsigned long)getuid());
+  if(mkdir(cache_dir,0700)!=0&&errno!=EEXIST){free(b.s);free(slots);return;}
+  struct stat cache_stat;
+  if(stat(cache_dir,&cache_stat)!=0||!S_ISDIR(cache_stat.st_mode)||cache_stat.st_uid!=getuid()){free(b.s);free(slots);return;}
+  (void)chmod(cache_dir,0700);
+ }
  uint64_t hash=UINT64_C(1469598103934665603);for(size_t i=0;i<b.len;i++){hash^=(unsigned char)b.s[i];hash*=UINT64_C(1099511628211);}
  snprintf(cachepath,sizeof(cachepath),"%s/%016llx.so",cache_dir,(unsigned long long)hash);
  void*h=NULL;
@@ -1476,7 +1484,7 @@ static Value execute_function_bytecode(const Node*definition,const Node*call){
  if(bounds!=local_bounds)free(bounds);
  return vnull();
 }
-static Value call_user_function(const Node *call,FunctionDef *fn_def){
+static Value call_user_function_inner(const Node *call,FunctionDef *fn_def){
  const Node *definition=fn_def->node;
  const Node *params=definition->count?definition->children[0]:NULL;
  const Node *body=definition->count>1?definition->children[1]:NULL;
@@ -1500,6 +1508,23 @@ static Value call_user_function(const Node *call,FunctionDef *fn_def){
   if(compat==2&&values[i].type==V_INT)values[i]=vfloat((double)values[i].as.i);
  }
  if(runtime_failed){for(size_t j=0;j<ac;j++)free_value(values[j]);if(values!=stack_values)free(values);return vnull();}
+ /* Tiering: em OPT=1 a função começa interpretada e só compila depois de
+    amadurecer. Evita pagar gcc por função chamada uma vez; programa com laço
+    quente ainda ganha o JIT. OPT=2 compila no registro. */
+ if(!in_worker&&!fn_def->jit_fn&&!fn_def->jit_attempted&&pifari_opt_level()>0){
+  const char*thr=getenv("PIFARI_JIT_THRESHOLD");
+  unsigned long long threshold=(thr&&*thr)?(unsigned long long)atoll(thr):16ULL;
+  if(threshold<1)threshold=1;
+  const char*budget_env=getenv("PIFARI_JIT_BUDGET_MS");
+  unsigned long long budget_ms=(budget_env&&*budget_env)?(unsigned long long)atoll(budget_env):50ULL;
+  if(fn_def->calls>=threshold||fn_def->time_ns>=budget_ms*1000000ULL){
+   fn_def->jit_attempted=1;
+   jit_compile_function(fn_def);
+   pifari_plan_log("funcao",fn_def->name,fn_def->jit_fn?PLAN_JIT:PLAN_WALK,
+                   fn_def->jit_fn?"tier-up":"nao elegivel para jit");
+  }
+ }
+ fn_def->calls++;
  if(fn_def->jit_fn&&ac==1&&values[0].type==V_INT){
   long long arg=values[0].as.i;
   if(fn_def->jit_requires_range&&(arg<0||arg>1000000)){free_value(values[0]);if(values!=stack_values)free(values);fail(call,"range aceita inteiro entre 0 e 1000000");return vnull();}
@@ -1556,6 +1581,88 @@ static Value call_user_function(const Node *call,FunctionDef *fn_def){
  for(size_t i=0;i<used;i++)free_value(frame->slots[i].value);
  if(frame->slots!=stack_slots)free(frame->slots);
  return_active=saved_return_active;return_value=saved_return_value;
+ return result;
+}
+
+/* ===== F4: manifesto de aquecimento =====
+   Guarda, por função, quantas chamadas e quanto tempo ela acumulou na execução
+   anterior. Na próxima execução a função já nasce "madura" e entra no JIT na
+   primeira chamada, em vez de esperar o limiar de tiering de novo.
+   Formato texto simples (uma linha por função), versão explícita. */
+#define PIFARI_WARMUP_MAX 128
+typedef struct { char name[64]; unsigned long long fp, calls, time_ns; } WarmupEntry;
+static WarmupEntry warmup_entries[PIFARI_WARMUP_MAX];
+static size_t warmup_count;
+static int warmup_state; /* 0 = não carregado, 1 = carregado, 2 = desligado */
+
+static unsigned long long fnv1a_str(const char *s, unsigned long long h) {
+ if (!s) return h;
+ for (; *s; s++) { h ^= (unsigned char)*s; h *= UINT64_C(1099511628211); }
+ return h;
+}
+static void warmup_path(char *dst, size_t cap) {
+ char root[512];
+ if (pifari_cache_root(root, sizeof(root)) != 0) { dst[0] = 0; return; }
+ snprintf(dst, cap, "%s/warmup.txt", root);
+}
+static void warmup_load(void) {
+ if (warmup_state) return;
+ warmup_state = 1;
+ char path[600];
+ warmup_path(path, sizeof(path));
+ if (!path[0]) { warmup_state = 2; return; }
+ FILE *f = fopen(path, "r");
+ if (!f) return;
+ char line[256];
+ int version_ok = 0;
+ while (fgets(line, sizeof(line), f)) {
+  if (!strncmp(line, "version 1", 9)) { version_ok = 1; continue; }
+  if (!version_ok || strncmp(line, "fn ", 3)) continue;
+  if (warmup_count >= PIFARI_WARMUP_MAX) break;
+  WarmupEntry *e = &warmup_entries[warmup_count];
+  if (sscanf(line + 3, "%63s %llu %llu %llu", e->name, &e->fp, &e->calls, &e->time_ns) == 4)
+   warmup_count++;
+ }
+ fclose(f);
+}
+static void warmup_seed(FunctionDef *fn) {
+ if (!fn || !pifari_cache_enabled()) return;
+ warmup_load();
+ if (warmup_state == 2) return;
+ unsigned long long fp = fnv1a_str(fn->name, UINT64_C(1469598103934665603));
+ fp = fnv1a_str(fn->node ? fn->node->kind : "", fp);
+ fp = (fp ^ (unsigned long long)fn->slot_count) * UINT64_C(1099511628211);
+ for (size_t i = 0; i < warmup_count; i++) {
+  if (warmup_entries[i].fp != fp || strcmp(warmup_entries[i].name, fn->name)) continue;
+  fn->calls = warmup_entries[i].calls;
+  fn->time_ns = warmup_entries[i].time_ns;
+  pifari_plan_log("funcao", fn->name, PLAN_JIT, "aquecida pelo manifesto");
+  return;
+ }
+}
+static void warmup_save(void) {
+ if (!pifari_cache_enabled()) return;
+ char path[600];
+ warmup_path(path, sizeof(path));
+ if (!path[0]) return;
+ char tmp[640];
+ snprintf(tmp, sizeof(tmp), "%s.tmp", path);
+ FILE *f = fopen(tmp, "w");
+ if (!f) return;
+ fputs("version 1\n", f);
+ for (FunctionDef *fn = functions; fn; fn = fn->next) {
+  unsigned long long fp = fnv1a_str(fn->name, UINT64_C(1469598103934665603));
+  fp = fnv1a_str(fn->node ? fn->node->kind : "", fp);
+  fp = (fp ^ (unsigned long long)fn->slot_count) * UINT64_C(1099511628211);
+  fprintf(f, "fn %s %llu %llu %llu\n", fn->name, fp, fn->calls, fn->time_ns);
+ }
+ fclose(f);
+ rename(tmp, path);
+}
+static Value call_user_function(const Node *call,FunctionDef *fn_def){
+ long long started=monotonic_ns();
+ Value result=call_user_function_inner(call,fn_def);
+ if(fn_def)fn_def->time_ns+=(unsigned long long)(monotonic_ns()-started);
  return result;
 }
 static char *runtime_invoke_mcp_tool_cb(const char *fn_name,size_t argc,const char **argv,int *out_is_error){
@@ -2489,10 +2596,11 @@ static void exec_node(const Node*n){
   f->name=n->value;f->node=n;f->next=functions;functions=f;
   prepare_function_slots(f);
   f->effects=compute_effects(n->count>1?n->children[1]:NULL,0);f->effects_ready=1;
+  warmup_seed(f);
   char ir_error[160];
   if(pifari_ast_function_to_ir(n,&f->ir,ir_error,sizeof(ir_error))==0)
    f->ir_ready=1;
-  jit_compile_function(f);
+  if(pifari_opt_level()>=2)jit_compile_function(f);
   return;
  }
  if(!strcmp(n->kind,"Break")||!strcmp(n->kind,"Continue")){fail(n,"%s ainda não é suportado pelo runtime",n->kind);return;}
@@ -2512,6 +2620,7 @@ int runtime_execute(const Node*program){
  pifari_gpu_shutdown();
  agent_runtime_reset();
  Binding*b=globals;while(b){Binding*next=b->next;free(b->name);free_value(b->value);free(b);b=next;}globals=NULL;memset(binding_buckets,0,sizeof(binding_buckets));
+ warmup_save();
  free_function_registry();
  chain_kernel_cache_clear();
  free_value(return_value);return_value=vnull();return_active=0;

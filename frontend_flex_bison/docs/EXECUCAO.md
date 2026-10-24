@@ -1,58 +1,62 @@
 # EXECUCAO — checkpoint do plano de tipos e otimização
 
 Atualizado ao fim de cada sessão. Ao retomar: ler **só este arquivo** + `git log --oneline -5`
-e `git status --short`. Não reler `runtime.c` inteiro (~2650 linhas).
+e `git status --short`. Não reler `runtime.c` inteiro (~2750 linhas).
 
 ## Estado
 
-- **Etapa atual:** F3b — seleção adaptativa + IR estendido (F0–F2 e F3a concluídas)
-- **Último teste verde:** `test-core`, `check-core` e `test-equiv` (26 iguais, 8 pulados)
-- **Plano:** F0–F5; semântica em `docs/SPEC_SEMANTICA.md` (§8 contrato, §11 check, §12 efeitos)
+- **Etapa atual:** F5 — verificação final e benchmarks (F0–F4 concluídas)
+- **Último teste verde:** `test-core` exit 0, `check-core` exit 0, `test-equiv` EQUIV_OK
+- **Plano:** F0–F5; semântica em `docs/SPEC_SEMANTICA.md` (§13 cache, §11 check, §12 efeitos)
 
 ## Concluído
 
 - **F0** — semântica declarada; JIT com atribuição definida; overflow detectável; `//` e `%`
   truncando; diretivas falham; `dict` fora do léxico.
-- **F1a/b/c** — `types.[ch]`; `=:` verificado com promoção `int→float`; parâmetros e retorno
-  tipados; `typecheck.[ch]` + `pifari --check` + `make check-core`.
-- **F2** — `effects.[ch]`: puro/leitura/escrita/io, análise transitiva, builtin `efeitos()`,
+- **F1a/b/c** — `types.[ch]`; `=:` verificado; parâmetros e retorno tipados;
+  `typecheck.[ch]` + `pifari --check` + `make check-core`.
+- **F2** — `effects.[ch]` com puro/leitura/escrita/io, análise transitiva, `efeitos()`,
   gate `EFFECT_PURE` no kernel nativo.
-- **F3a** — `backend/plan.[ch]`: `PIFARI_OPT=0|1|2`, `PIFARI_OPT_DEBUG=1` com log de plano;
-  `bc_ensure`, `bc_ensure_function`, `jit_compile_function` e `try_native_map_flow` gateados;
-  `tests/equiv.sh` + `make test-equiv` comparando byte a byte `OPT=0` vs `OPT=2`; ressalva
-  documentada (§8.1) sobre efeitos dentro de `>|` serem não determinísticos e (§8.2) sobre
-  nunca incluir o orquestrador de Reels em teste.
+- **F3a** — `plan.[ch]`: `PIFARI_OPT=0|1|2`, `PIFARI_OPT_DEBUG=1`, gates de bytecode/JIT/nativo,
+  `tests/equiv.sh` + `make test-equiv` (26 iguais, 8 pulados, EQUIV_OK).
+- **F3b** — tiering do JIT: `OPT=1` começa interpretado e compila após **16 chamadas ou 50 ms**
+  acumulados (`PIFARI_JIT_THRESHOLD`, `PIFARI_JIT_BUDGET_MS`); `OPT=2` compila no registro.
+  Chamada única não paga gcc (~25 ms em vez de ~850 ms).
+- **F4** — `backend/cache.[ch]`: cache persistente em `~/.cache/pifari/{jit,kernels}` (0700),
+  com queda para `/tmp`; `warmup.txt` com `fn <nome> <fingerprint> <chamadas> <tempo_ns>`;
+  seed na inicialização faz a função entrar no JIT na primeira chamada; gravação atômica;
+  `PIFARI_WARMUP=off`. Medido: frio 2 572 ms → morno **33 ms** (78×).
 
-## Próximos 3 passos (F3b)
+## Próximos 3 passos (F5)
 
-1. `ast_ir.[ch]`: IR para laço `for i in range(n)` puro, redução de soma e `A[i]` em laço
-   (hoje só expressão unária e `(A,i)`).
-2. Seleção adaptativa: escolher plano por função/laço com base em guardas de tipo + amostras
-   medidas (EWMA), trocando só na entrada; deopt para WALK quando a guarda falhar.
-3. `docs/OTIMIZACOES.md` com antes/depois por exemplo, sempre validado por `make test-equiv`.
+1. `tests/golden/`: saída canônica dos programas determinísticos do `test-core`; alvo
+   `make test-golden` regenerando quando combinado (`--atualizar`).
+2. `docs/OTIMIZACOES.md`: tabela antes/depois por exemplo (JIT frio vs morno, tiering,
+   `OPT=0` vs `OPT=2`), sempre validada por `test-equiv`.
+3. Fechar: rodar `test-core`, `check-core`, `test-equiv`, `test-gpu` e `test-golden`;
+   atualizar `STATUS_REAL.md` e o README com a seção de otimização.
 
 ## Observações
 
-- **Acidente registrado:** uma execução de `sh tests/equiv.sh examples/*.pif` incluiu
-  `orquestrador_reels_aistudio.pif`, que chamou a API do Gemini e consumiu quota. O script
-  agora documenta explicitamente para nunca incluir esse arquivo; os alvos do Makefile já
-  o excluem.
+- `/tmp` do WSL é limpo entre sessões — mais um motivo para o cache viver em `~/.cache`.
+- **Nunca** rodar `examples/orquestrador_reels_aistudio.pif` (chama Gemini e gasta quota).
 - `teste_cliente_servidor_mcp_pifari.pif` é flaky (timeout do mock MCP).
-- JIT frio custa ~850 ms de gcc; quente roda 20 chamadas de 200k iterações em 14 ms.
-  Isso é o argumento da F4 (cache persistente).
-- 8 programas do `test-core` são não determinísticos por natureza (tempo, `thread_id`,
-  print dentro de fluxo paralelo) e são pulados no `test-equiv`.
+- 8 programas do `test-core` são não determinísticos por natureza e são pulados no equiv.
+- Falta o IR estendido para laços (F3b original): hoje o kernel nativo cobre expressão
+  unária e `(A,i)`; laço `for` puro ainda não vira kernel. Registrado como próximo passo
+  opcional pós-F5.
 
 ## Decisões (não reabrir)
 
 - Overflow = erro; `->` = tipo de retorno; lista = valor; classes/closures/módulos/GC fora.
 - Efeito não altera execução: só autoriza/veta especialização.
-- `OPT=0` desliga bytecode, JIT e kernel nativo: é a referência de comparação.
-- Contrato de equivalência vale para programa determinístico; `>|` com efeito não é.
+- `OPT=0` desliga bytecode, JIT e kernel nativo: é a referência.
+- Contrato de equivalência vale para programa determinístico.
+- Manifesto de aquecimento nunca muda resultado, só quando o JIT entra.
 
 ## Arquivos tocados
 
-- `backend/types.[ch]`, `backend/typecheck.[ch]`, `backend/effects.[ch]`, `backend/plan.[ch]`
-- `backend/runtime.c`, `frontend/parser.y`, `frontend/lexer.l`, `Makefile`
-- `tests/equiv.sh`, `docs/SPEC_SEMANTICA.md`, `docs/STATUS_REAL.md`, `docs/EXECUCAO.md`
-- `examples/tipos.pif`, `examples/efeitos.pif`
+- `backend/`: types, typecheck, effects, plan, cache (novos) + runtime, native_kernel
+- `frontend/parser.y`, `frontend/lexer.l`, `Makefile`, `tests/equiv.sh`
+- `docs/`: SPEC_SEMANTICA (novo), STATUS_REAL, EXECUCAO
+- `examples/`: tipos.pif, efeitos.pif (novos)
