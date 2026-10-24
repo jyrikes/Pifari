@@ -100,6 +100,13 @@ static void profile_inc(unsigned long long *counter){if(profiling_enabled)__atom
 
 static Value eval(const Node*n);
 static void exec_node(const Node*n);
+/* Tarefas: implementadas depois de clone_bindings, mas usadas por eval_call. */
+static long long pifari_task_spawn(const Node *expr);
+static int pifari_task_cancel(long long id);
+static Value pifari_task_await(const Node *at, long long id);
+static void pifari_tasks_shutdown(void);
+static int pifari_task_cancelled(void);
+#define PIFARI_TASK_CANCELLED() pifari_task_cancelled()
 static Binding *clone_bindings(Binding *src);
 static Binding *find_binding(const char *name);
 static Binding *node_target_binding(const Node *n, const char *name);
@@ -302,7 +309,7 @@ static Value eval_bytecode(const Node*n){
  Value local_stack[32];
  Value*stack=cap<=32?local_stack:malloc(cap*sizeof(Value));
  if(!stack){fail(n,"memória insuficiente na VM");return vnull();}
- for(size_t pc=0;pc<n->bytecode_count&&!runtime_failed;pc++){
+ for(size_t pc=0;pc<n->bytecode_count&&!runtime_failed&&!PIFARI_TASK_CANCELLED();pc++){
   profile_inc(&profile_bytecode_ops);
   ByteInstr in=n->bytecode[pc];Value a,b,r=vnull();
   switch(in.op){
@@ -431,6 +438,14 @@ static Value eval_call(const Node*n){
  if(!strcmp(name,"modo_threads")){
   if(count!=0){fail(n,"modo_threads não espera argumentos");return vnull();}
   execution_processes=0;execution_workers=0;return vnull();
+ }
+ if(!strcmp(name,"cancelar")){
+  if(count!=1){fail(n,"cancelar espera o identificador da tarefa");return vnull();}
+  Value idv=eval(args->children[0]);
+  if(idv.type!=V_INT){free_value(idv);fail(n,"cancelar espera o identificador devolvido por spawn");return vnull();}
+  long long id=idv.as.i;free_value(idv);
+  if(pifari_task_cancel(id)<0){fail(n,"tarefa inválida");return vnull();}
+  return vnull();
  }
  if(!strcmp(name,"dispositivos")){
   if(count!=0){fail(n,"dispositivos não espera argumentos");return vnull();}
@@ -1217,7 +1232,7 @@ static Value execute_function_bytecode(const Node*definition,const Node*call){
  long long local_bounds[32]={0};
  long long*bounds=code_count<=32?local_bounds:(code_count<=1048576?calloc(code_count,sizeof(long long)):NULL);
  if(!stack||!bounds){if(stack&&stack!=local_stack)free(stack);if(bounds&&bounds!=local_bounds)free(bounds);fail(call,"memória insuficiente na VM de função");return vnull();}
- while(pc<definition->function_code_count&&!runtime_failed&&!return_active){
+ while(pc<definition->function_code_count&&!runtime_failed&&!return_active&&!PIFARI_TASK_CANCELLED()){
   ByteInstr in=definition->function_code[pc];Value a,b,r=vnull();
   switch(in.op){
    case BC_INT:stack[sp++]=vint(in.i);pc++;break;
@@ -1488,6 +1503,97 @@ static void *persistent_worker(void*opaque){
   pthread_mutex_unlock(&worker_pool.mutex);
  }
  return NULL;
+}
+/* ===== Tarefas: spawn / await / cancelar =====
+   `spawn expr` cria e inicia imediatamente; o id inteiro devolvido indexa o
+   registro. A tarefa roda com ambiente clonado (mesmo isolamento do worker) e o
+   cancelamento é cooperativo, checado nos laços de execução. */
+#define PIFARI_MAX_TASKS 64
+typedef struct PifariTask {
+ pthread_t thread;
+ _Atomic int status;
+ _Atomic int cancel;
+ int used;
+ Value result;
+ char error[256];
+ const Node *expr;
+ Binding *env;
+} PifariTask;
+static PifariTask pifari_tasks[PIFARI_MAX_TASKS];
+static pthread_mutex_t tasks_mutex = PTHREAD_MUTEX_INITIALIZER;
+static _Thread_local PifariTask *current_task;
+static int pifari_task_cancelled(void){
+ return current_task && __atomic_load_n(&current_task->cancel,__ATOMIC_RELAXED);
+}
+
+static void *pifari_task_thread(void *arg){
+ PifariTask *t=(PifariTask*)arg;
+ globals=t->env;rebuild_binding_index();
+ runtime_failed=0;error_message[0]=0;current_task=t;
+ Value v=eval(t->expr);
+ current_task=NULL;
+ if(__atomic_load_n(&t->cancel,__ATOMIC_ACQUIRE)){
+  __atomic_store_n(&t->status,5,__ATOMIC_RELEASE);
+  free_value(v);
+ }else if(runtime_failed){
+  __atomic_store_n(&t->status,4,__ATOMIC_RELEASE);
+  snprintf(t->error,sizeof(t->error),"%s",error_message[0]?error_message:"erro não especificado");
+  free_value(v);
+ }else{
+  t->result=v;
+  __atomic_store_n(&t->status,3,__ATOMIC_RELEASE);
+ }
+ free_binding_nodes(globals);globals=NULL;memset(binding_buckets,0,sizeof(binding_buckets));
+ t->env=NULL;
+ return NULL;
+}
+static long long pifari_task_spawn(const Node *expr){
+ if(!expr){fail(NULL,"spawn exige uma expressão");return -1;}
+ long long slot=-1;
+ pthread_mutex_lock(&tasks_mutex);
+ for(int i=0;i<PIFARI_MAX_TASKS;i++)if(!pifari_tasks[i].used){slot=i;break;}
+ if(slot>=0){
+  PifariTask*t=&pifari_tasks[slot];
+  t->used=1;__atomic_store_n(&t->status,1,__ATOMIC_RELEASE);__atomic_store_n(&t->cancel,0,__ATOMIC_RELEASE);
+  t->result=vnull();t->error[0]=0;t->expr=expr;t->env=clone_bindings(globals);
+ }
+ pthread_mutex_unlock(&tasks_mutex);
+ if(slot<0){fail(expr,"limite de %d tarefas simultâneas atingido",PIFARI_MAX_TASKS);return -1;}
+ PifariTask*t=&pifari_tasks[slot];
+ if(pthread_create(&t->thread,NULL,pifari_task_thread,t)!=0){
+  pthread_mutex_lock(&tasks_mutex);t->used=0;pthread_mutex_unlock(&tasks_mutex);
+  fail(expr,"não foi possível criar a tarefa");return -1;
+ }
+ return slot;
+}
+static int pifari_task_cancel(long long id){
+ if(id<0||id>=PIFARI_MAX_TASKS||!pifari_tasks[id].used)return -1;
+ __atomic_store_n(&pifari_tasks[id].cancel,1,__ATOMIC_RELEASE);
+ return (int)id;
+}
+static Value pifari_task_await(const Node *at,long long id){
+ if(id<0||id>=PIFARI_MAX_TASKS||!pifari_tasks[id].used){fail(at,"tarefa inválida");return vnull();}
+ PifariTask*t=&pifari_tasks[id];
+ pthread_join(t->thread,NULL);
+ int status=__atomic_load_n(&t->status,__ATOMIC_ACQUIRE);
+ Value out=vnull();
+ if(status==3)out=copy_value(t->result);
+ else if(status==4)fail(at,"tarefa falhou: %s",t->error[0]?t->error:"erro não especificado");
+ else if(status==5)fail(at,"tarefa cancelada");
+ else fail(at,"estado de tarefa inesperado (%d)",status);
+ free_value(t->result);t->result=vnull();
+ pthread_mutex_lock(&tasks_mutex);t->used=0;pthread_mutex_unlock(&tasks_mutex);
+ return out;
+}
+static void pifari_tasks_shutdown(void){
+ for(int i=0;i<PIFARI_MAX_TASKS;i++){
+  if(!pifari_tasks[i].used)continue;
+  __atomic_store_n(&pifari_tasks[i].cancel,1,__ATOMIC_RELEASE);
+  pthread_join(pifari_tasks[i].thread,NULL);
+  free_value(pifari_tasks[i].result);
+  pifari_tasks[i].result=vnull();
+  pifari_tasks[i].used=0;
+ }
 }
 static void pool_initialize(void){
  pthread_mutex_lock(&worker_pool.mutex);
@@ -1978,9 +2084,21 @@ static Value eval(const Node*n){
   free_value(iteration_slot.value);local_frame=frame.parent;free_value(seq);
   return vnull();
  }
+  if(!strcmp(n->kind,"Spawn")){
+  if(n->count<1){fail(n,"spawn exige uma expressão");return vnull();}
+  long long id=pifari_task_spawn(n->children[0]);
+  return id<0?vnull():vint(id);
+ }
+ if(!strcmp(n->kind,"Await")){
+  Value idv=eval(n->children[0]);
+  if(runtime_failed){free_value(idv);return vnull();}
+  if(idv.type!=V_INT){free_value(idv);fail(n,"await espera o identificador devolvido por spawn");return vnull();}
+  long long id=idv.as.i;free_value(idv);
+  return pifari_task_await(n,id);
+ }
  fail(n,"expressão não suportada: %s",n->kind);return vnull();
 }
-static void exec_block(const Node*n){if(!n)return;for(size_t i=0;i<n->count&&!runtime_failed&&!return_active;i++)exec_node(n->children[i]);}
+static void exec_block(const Node*n){if(!n)return;for(size_t i=0;i<n->count&&!runtime_failed&&!return_active&&!PIFARI_TASK_CANCELLED();i++)exec_node(n->children[i]);}
 static int try_assign_list_append_in_place(const Node *n){
  if(!n->value||n->count<1)return 0;
  const Node *rhs=n->children[0];
@@ -2070,8 +2188,8 @@ static void exec_node(const Node*n){
  if(!strcmp(n->kind,"If")){if(n->count>=2){Value c=eval(n->children[0]);if(truthy(c))exec_node(n->children[1]);free_value(c);}return;}
  if(!strcmp(n->kind,"IfElse")){if(n->count>=2){const Node*condition=n->children[0];Value c=condition->count?eval(condition->children[0]):vnull();if(truthy(c)){if(condition->count>1)exec_node(condition->children[1]);}else exec_node(n->children[1]);free_value(c);}return;}
  if(!strcmp(n->kind,"IfElseIf")){if(n->count>=2){const Node*c=n->children[0],*e=n->children[1];Value v=c->count?eval(c->children[0]):vnull();if(truthy(v)){if(c->count>1)exec_node(c->children[1]);}else if(e->count>1){Value ev=eval(e->children[0]);if(truthy(ev))exec_node(e->children[1]);free_value(ev);}free_value(v);}return;}
- if(!strcmp(n->kind,"For")){if(n->count<2){fail(n,"laço for inválido");return;}Value seq=eval(n->children[0]);if(seq.type==V_LIST){Binding *loop_binding=find_binding(n->value);for(size_t i=0;i<seq.as.list.count&&!runtime_failed&&!return_active;i++){loop_binding=set_loop_binding(loop_binding,n->value,copy_value(seq.as.list.items[i]),n);exec_node(n->children[1]);}}else if(seq.type==V_F64_ARRAY){Binding *loop_binding=find_binding(n->value);for(size_t i=0;i<seq.as.array->length&&!runtime_failed&&!return_active;i++){loop_binding=set_loop_binding(loop_binding,n->value,vfloat(seq.as.array->data[i]),n);exec_node(n->children[1]);}}else if(seq.type==V_RANGE){Binding *loop_binding=find_binding(n->value);for(long long i=0;i<seq.as.range_end&&!runtime_failed&&!return_active;i++){loop_binding=set_loop_binding(loop_binding,n->value,vint(i),n);exec_node(n->children[1]);}}else if(seq.type==V_STRING){Binding *loop_binding=find_binding(n->value);for(size_t i=0;seq.as.s[i]&&!runtime_failed&&!return_active;i++){char c[2]={seq.as.s[i],0};loop_binding=set_loop_binding(loop_binding,n->value,vstr(c),n);exec_node(n->children[1]);}}else fail(n,"for exige uma lista, texto ou range iterável");free_value(seq);return;}
- if(!strcmp(n->kind,"Return")){if(return_active){fail(n,"return aninhado inválido");return;}Value v=n->count?eval(n->children[0]):vnull();if(!runtime_failed){return_value=v;return_active=1;}return;}
+ if(!strcmp(n->kind,"For")){if(n->count<2){fail(n,"laço for inválido");return;}Value seq=eval(n->children[0]);if(seq.type==V_LIST){Binding *loop_binding=find_binding(n->value);for(size_t i=0;i<seq.as.list.count&&!runtime_failed&&!return_active&&!PIFARI_TASK_CANCELLED();i++){loop_binding=set_loop_binding(loop_binding,n->value,copy_value(seq.as.list.items[i]),n);exec_node(n->children[1]);}}else if(seq.type==V_F64_ARRAY){Binding *loop_binding=find_binding(n->value);for(size_t i=0;i<seq.as.array->length&&!runtime_failed&&!return_active&&!PIFARI_TASK_CANCELLED();i++){loop_binding=set_loop_binding(loop_binding,n->value,vfloat(seq.as.array->data[i]),n);exec_node(n->children[1]);}}else if(seq.type==V_RANGE){Binding *loop_binding=find_binding(n->value);for(long long i=0;i<seq.as.range_end&&!runtime_failed&&!return_active&&!PIFARI_TASK_CANCELLED();i++){loop_binding=set_loop_binding(loop_binding,n->value,vint(i),n);exec_node(n->children[1]);}}else if(seq.type==V_STRING){Binding *loop_binding=find_binding(n->value);for(size_t i=0;seq.as.s[i]&&!runtime_failed&&!return_active;i++){char c[2]={seq.as.s[i],0};loop_binding=set_loop_binding(loop_binding,n->value,vstr(c),n);exec_node(n->children[1]);}}else fail(n,"for exige uma lista, texto ou range iterável");free_value(seq);return;}
+  if(!strcmp(n->kind,"Return")){if(return_active){fail(n,"return aninhado inválido");return;}Value v=n->count?eval(n->children[0]):vnull();if(!runtime_failed){return_value=v;return_active=1;}return;}
  if(!strcmp(n->kind,"Function")||!strcmp(n->kind,"FunctionExpr")){
   for(FunctionDef*f=functions;f;f=f->next)if(!strcmp(f->name,n->value)){
    fail(n,"função '%s' já foi definida",n->value);return;
@@ -2097,6 +2215,7 @@ int runtime_execute(const Node*program){
  globals=NULL;local_frame=NULL;memset(binding_buckets,0,sizeof(binding_buckets));runtime_failed=0;return_active=0;return_value=vnull();
  free_function_registry();
  exec_node(program);
+ pifari_tasks_shutdown();
  pool_shutdown();
  pifari_gpu_shutdown();
  agent_runtime_reset();

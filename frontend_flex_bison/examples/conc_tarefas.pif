@@ -1,0 +1,29 @@
+@ Tarefas: spawn / await / cancelar (docs/SPEC_CONCORRENCIA.md §5)
+@ spawn inicia imediatamente e devolve o identificador; await espera o valor.
+@ A falha de uma tarefa propaga no ponto de espera (caso C10 do SPEC) — para não
+@ deixar este exemplo com saída de erro, ele cobre só o caminho feliz.
+
+function soma_ate(n)
+  total = 0
+  for i in range(n)
+    total = total + i
+  return total
+
+t1 = spawn soma_ate(1000)
+t2 = spawn soma_ate(10)
+print("ids:", t1, t2)
+
+print("resultados:", await t1, await t2)
+
+@ Cancelamento cooperativo: a tarefa para no próximo ponto seguro.
+function lenta()
+  total = 0
+  for bloco in range(20)
+    for i in range(900000)
+      total = total + 1
+  return total
+
+t3 = spawn lenta()
+sleep_ms(5)
+cancelar(t3)
+print("cancelada antes de terminar")

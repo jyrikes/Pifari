@@ -55,6 +55,8 @@ STR (\"([^\\\"\n]|\\.)*\"|'([^\\'\n]|\\.)*')
 <INITIAL>"function"|"func" {return FUNCTION;}
 <INITIAL>"for" {return FOR;}
 <INITIAL>"in" {return IN;}
+<INITIAL>"spawn" {return SPAWN;}
+<INITIAL>"await" {return AWAIT;}
 <INITIAL>"return" {return RETURN;}
 <INITIAL>"break" {return BREAK;}
 <INITIAL>"continue" {return CONTINUE;}

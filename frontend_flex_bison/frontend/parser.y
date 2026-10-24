@@ -15,7 +15,7 @@ static char *join_path(char*a,char*b){size_t n=strlen(a)+strlen(b)+2;char*p=mall
 %union { char *str; Node *node; }
 %token <str> IDENTIFIER STRING INTEGER FLOAT TYPE
 %token TRUE FALSE NULLVAL
-%token IF ELSE ELSEIF FOR IN RETURN BREAK CONTINUE IMPORT LINK TO INCLUDE FUNCTION
+%token IF ELSE ELSEIF FOR IN RETURN BREAK CONTINUE IMPORT LINK TO INCLUDE FUNCTION SPAWN AWAIT
 %token CLASS_DEF TYPED_DECL ASSIGN
 %token INDENT DEDENT NEWLINE
 %token LPAREN RPAREN LBRACE RBRACE LBRACKET RBRACKET COMMA DOT COLON
@@ -34,6 +34,8 @@ static char *join_path(char*a,char*b){size_t n=strlen(a)+strlen(b)+2;char*p=mall
 %right POWER
 %precedence DOT LBRACKET
 %precedence NOT UMINUS
+%precedence AWAIT
+%precedence SPAWN
 %start program
 %%
 program: lines {pifari_root=node_new("Program",NULL,@1.first_line,@1.first_column);if($1){for(size_t i=0;i<$1->count;i++)node_add(pifari_root,$1->children[i]);free($1->children);free($1->kind);free($1->value);free($1);}};
@@ -112,6 +114,8 @@ expr:
  | expr APPLY expr {$$=node_pair("Flow","<|", $1,$3,@2.first_line,@2.first_column);}
  | expr FANOUT expr {$$=node_pair("Flow",">|", $1,$3,@2.first_line,@2.first_column);}
  | expr JOIN expr {$$=node_pair("Flow","|<", $1,$3,@2.first_line,@2.first_column);}
+ | SPAWN expr {$$=node_pair("Spawn",NULL,$2,NULL,@1.first_line,@1.first_column);}
+ | AWAIT expr {$$=node_pair("Await",NULL,$2,NULL,@1.first_line,@1.first_column);}
  | MINUS expr %prec UMINUS {$$=node_pair("Unary","-",$2,NULL,@1.first_line,@1.first_column);}
  | NOT expr {$$=node_pair("Unary","not",$2,NULL,@1.first_line,@1.first_column);}
  | expr DOT IDENTIFIER {$$=node_pair("Member",$3,$1,NULL,@2.first_line,@2.first_column);free($3);}
