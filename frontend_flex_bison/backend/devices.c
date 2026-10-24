@@ -13,7 +13,7 @@ static int probed;
 static int selected_index;
 
 /* /mnt/c/Users/... -> C:\Users\... */
-static void to_windows_path(const char *src, char *dst, size_t cap) {
+void pifari_to_windows_path(const char *src, char *dst, size_t cap) {
  if (!src || !*src) {
   if (cap) dst[0] = 0;
   return;
@@ -74,20 +74,28 @@ static void parse_dev_line(char *line) {
  device_count++;
 }
 
+void pifari_worker_script(char *dst, size_t cap) {
+ const char *env_script = getenv("PIFARI_WORKER");
+ if (env_script && *env_script) {
+  snprintf(dst, cap, "%s", env_script);
+  return;
+ }
+ char cwd[512], win[512];
+ if (!getcwd(cwd, sizeof(cwd))) {
+  if (cap) dst[0] = 0;
+  return;
+ }
+ pifari_to_windows_path(cwd, win, sizeof(win));
+ snprintf(dst, cap, "%s\\tools\\pifari_worker.py", win);
+}
+
 static void probe_worker(void) {
  const char *python = getenv("PIFARI_PYTHON");
  if (!python || !*python) python = "python.exe";
 
  char script[600];
- const char *env_script = getenv("PIFARI_WORKER");
- if (env_script && *env_script) {
-  snprintf(script, sizeof(script), "%s", env_script);
- } else {
-  char cwd[512], win[512];
-  if (!getcwd(cwd, sizeof(cwd))) return;
-  to_windows_path(cwd, win, sizeof(win));
-  snprintf(script, sizeof(script), "%s\\tools\\pifari_worker.py", win);
- }
+ pifari_worker_script(script, sizeof(script));
+ if (!script[0]) return;
 
  char cmd[1400];
  snprintf(cmd, sizeof(cmd), "%s \"%s\" --list 2>/dev/null", python, script);

@@ -7,6 +7,7 @@
 #include "agent_runtime.h"
 #include "mcp_server.h"
 #include "devices.h"
+#include "gpu_client.h"
 #include <errno.h>
 #include <math.h>
 #include <float.h>
@@ -620,7 +621,17 @@ static Value eval_call(const Node*n){
   size_t len=seq.as.list.count;double*in=malloc((len?len:1)*sizeof(double));double*outbuf=malloc((len?len:1)*sizeof(double));
   if(!in||!outbuf){free(in);free(outbuf);free_value(seq);free_value(sv);free_value(bv);fail(n,"memória insuficiente em map_affine_relu");return vnull();}
   int valid=1;for(size_t i=0;i<len;i++){Value x=seq.as.list.items[i];if(x.type!=V_INT&&x.type!=V_FLOAT){valid=0;break;}in[i]=number(x,n);}
-  if(!valid||pifari_kernel_affine_relu(in,outbuf,len,number(sv,n),number(bv,n),workers)!=0){free(in);free(outbuf);free_value(seq);free_value(sv);free_value(bv);fail(n,"map_affine_relu falhou: elementos precisam ser numéricos");return vnull();}
+  int computed=0;
+  if(valid&&len){
+   pifari_devices_probe();
+   const PifariDevice*dev=pifari_devices_selected();
+   size_t threshold=65536;
+   const char*thr=getenv("PIFARI_GPU_THRESHOLD");
+   if(thr&&*thr){long long t=atoll(thr);if(t>0)threshold=(size_t)t;}
+   if(dev&&!strcmp(dev->backend,"opencl")&&len>=threshold)
+    computed=(pifari_gpu_affine_relu(in,outbuf,len,number(sv,n),number(bv,n))==0);
+  }
+  if(!computed&&(!valid||pifari_kernel_affine_relu(in,outbuf,len,number(sv,n),number(bv,n),workers)!=0)){free(in);free(outbuf);free_value(seq);free_value(sv);free_value(bv);fail(n,"map_affine_relu falhou: elementos precisam ser numéricos");return vnull();}
   Value result=list_new(len);if(result.type!=V_LIST){free(in);free(outbuf);free_value(seq);free_value(sv);free_value(bv);fail(n,"memória insuficiente no resultado de map_affine_relu");return vnull();}
   for(size_t i=0;i<len;i++)result.as.list.items[i]=vfloat(outbuf[i]);
   free(in);free(outbuf);free_value(seq);free_value(sv);free_value(bv);return result;
@@ -2087,6 +2098,7 @@ int runtime_execute(const Node*program){
  free_function_registry();
  exec_node(program);
  pool_shutdown();
+ pifari_gpu_shutdown();
  agent_runtime_reset();
  Binding*b=globals;while(b){Binding*next=b->next;free(b->name);free_value(b->value);free(b);b=next;}globals=NULL;memset(binding_buckets,0,sizeof(binding_buckets));
  free_function_registry();

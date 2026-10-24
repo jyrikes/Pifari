@@ -1,0 +1,32 @@
+@ Compara map_affine_relu na GPU (Iris Xe) com o mesmo cálculo na CPU.
+@ A GPU não tem cl_khr_fp64: o kernel roda em float, então a tolerância é de
+@ alguns ULP de float32 (não é erro, é a precisão disponível no device).
+
+function identidade(x)
+  return x
+
+N = 200000
+range(N) >| x >| identidade(x) |< dados
+
+usar("gpu:0")
+inicio = agora_ns()
+g = map_affine_relu(dados, 2, -500)
+fim_gpu = agora_ns() - inicio
+print("gpu_len", len(g), "gpu_ns", fim_gpu)
+
+usar("cpu:0")
+inicio = agora_ns()
+c = map_affine_relu(dados, 2, -500)
+fim_cpu = agora_ns() - inicio
+print("cpu_len", len(c), "cpu_ns", fim_cpu)
+
+maior = 0
+for i in [0, 1, 999, 100000, 199999]
+  d = g[i] - c[i]
+  if d < 0
+    d = 0 - d
+  if d > maior
+    maior = d
+
+print("maior_diferenca_absoluta", maior)
+print("amostra_gpu", g[999], "cpu", c[999])

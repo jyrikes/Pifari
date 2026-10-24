@@ -1,6 +1,8 @@
 #ifndef PIFARI_DEVICES_H
 #define PIFARI_DEVICES_H
 
+#include <stddef.h>
+
 /* Registro de dispositivos de execução (SPEC_CONCORRENCIA §7).
    cpu:0 sempre existe; GPU/remoto entram quando o worker responde. */
 
@@ -34,5 +36,11 @@ int pifari_devices_find(const char *id);
 int pifari_devices_select(const char *id);
 int pifari_devices_selected_index(void);
 const PifariDevice *pifari_devices_selected(void);
+
+/* Converte /mnt/c/... em C:\... ; usado também por gpu_client.c. */
+void pifari_to_windows_path(const char *src, char *dst, size_t capacity);
+
+/* Caminho do tools/pifari_worker.py em formato Windows. */
+void pifari_worker_script(char *dst, size_t capacity);
 
 #endif

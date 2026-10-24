@@ -117,6 +117,10 @@ acesso; nenhuma corrida lógica é detectada automaticamente (spec §246).
 4. A escolha automática DEVE ser guiada por medição publicada em `docs/BENCHMARKS_GPU.md`,
    nunca por preferência. Se a GPU não ganhar na faixa testada, `auto` permanece em CPU e
    a GPU só funciona por escolha explícita.
+   **Medido em 2026-10-24:** a Iris Xe ficou ~7–8× mais lenta que a CPU em 200 mil e 1 milhão
+   de elementos, porque o transporte WSL↔Windows domina. `auto` = CPU; `gpu:0` só explícito.
+   O resultado numérico é idêntico (diferença 0 nos dados inteiros testados), então a GPU
+   continua sendo uma opção correta, apenas não vantajosa neste enlace.
 5. Indisponibilidade de dispositivo (worker morto, kernel que não compila, timeout) DEVE
    degradar para CPU com aviso em stderr, sem falhar o fluxo.
 6. A linguagem NÃO promete hardware: promete descoberta e colocação determinística.

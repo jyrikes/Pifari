@@ -5,19 +5,17 @@ e `git status --short`. Não reler `runtime.c` inteiro.
 
 ## Estado
 
-- **Etapa atual:** E4 — execução OpenCL na iGPU (E0–E3 concluídas)
-- **Último teste verde:** suíte completa (29 `.pif` + 5 binários C) antes da E3; depois da E3,
-  subconjunto de fluxo + `make test-gpu` verdes
+- **Etapa atual:** E5 — tarefas (`spawn`/`await`/`cancelar`) (E0–E4 concluídas)
+- **Último teste verde:** suíte completa (`FULL_SUITE_OK`: 29 `.pif` + 5 binários C)
 - **Plano completo:** `docs/SPEC_CONCORRENCIA.md` (normativo) + plano aprovado na sessão do DSH
 
 ## Hardware real (medido, 2026-10-24)
 
-- iGPU **Intel(R) Iris(R) Xe Graphics**, OpenCL 3.0 NEO, **7102 MB** compartilhados,
-  workgroup máx **512**, **80 compute units**, **sem `cl_khr_fp64`** (kernels em `float`).
-- A iGPU só é alcançável do **lado Windows**; o WSL não tem `/dev/dri`.
-- `pyopencl` instalado no Python do Windows (`C:\Users\Yngrid Kalinne\miniconda3\python.exe`)
-  e já enxerga o device — **não foi preciso registrar ICD com admin**.
-- `python.exe` funciona a partir do WSL (interop).
+- iGPU **Intel(R) Iris(R) Xe Graphics**, OpenCL 3.0 NEO, **7102 MB**, workgroup 512,
+  **80 CU**, **sem `cl_khr_fp64`** → kernels em `float`.
+- iGPU só do lado Windows; `python.exe` e `pyopencl` funcionam a partir do WSL (interop).
+- **A GPU perde da CPU**: ~7–8× mais lenta em 200k e 1M elementos, porque o transporte
+  WSL↔Windows domina. Números em `docs/BENCHMARKS_GPU.md`. `auto` = CPU; `gpu:0` é explícito.
 
 ## Concluído
 
@@ -26,34 +24,36 @@ e `git status --short`. Não reler `runtime.c` inteiro.
   sem deadlock; `error_message` por thread; slots anotados fora do caminho de trabalhador.
 - **E2** — `modo_processos(n)`/`modo_threads()`; fork + contador em `mmap(MAP_SHARED)`;
   resultado serializado por pipe; `poll()` + timeout 60 s; guarda de fork por `/proc/self/status`.
-- **E3** — `backend/devices.[ch]` (registro, `cpu:0` sempre, probe preguiçoso do worker),
-  `tools/pifari_worker.py` (`--list`/`--stdio`), builtins `dispositivos()` e `usar(id)`,
-  `make test-gpu`, `examples/gpu_dispositivos.pif`. Descoberta verificada: 2 dispositivos.
+- **E3** — `backend/devices.[ch]`, `tools/pifari_worker.py`, builtins `dispositivos()`/`usar(id)`,
+  `make test-gpu`. Descoberta: `cpu:0` + `gpu:0` (Iris Xe).
+- **E4** — `backend/gpu_client.[ch]`: worker persistente `--stdio`, base64 sobre pipe,
+  `map_affine_relu` na GPU com fallback para CPU; resultado idêntico ao da CPU (diff 0 nos
+  dados inteiros testados); benchmark publicado em `docs/BENCHMARKS_GPU.md`.
 
-## Próximos 3 passos (E4)
+## Próximos 3 passos (E5)
 
-1. `backend/ocl_emit.[ch]`: gerar OpenCL C do `PifariExprGraph` já existente (mesmo subconjunto
-   do `native_kernel`: `+ - * / % **`, `A[i]`, relu/max/exp), em `float` (sem fp64 no device).
-2. `tools/pifari_worker.py --stdio`: modo persistente; comando `MAP` com buffer binário;
-   resposta `OK` + bytes. Reaproveitar o framing binário já usado no modo processos.
-3. `>|` com `usar("gpu:0")` (ou `PIFARI_DEVICE=gpu:0`): enviar ao worker só quando o alvo for
-   função pura suportada; comparar com CPU (tolerância 1e-5, pois é `float`); medir e publicar
-   limiar em `docs/BENCHMARKS_GPU.md`.
+1. Lexer: tokens `spawn` e `await`; parser: `simple_statement: SPAWN expr` e `expr: AWAIT expr`
+   (prefixo). Conferir que `%expect 7` continua válido.
+2. `backend/task.[ch]`: `PifariTask { pthread_t, _Atomic status/cancel, Value result, char *error }`,
+   env clonado como no worker, registro global para encerramento ordenado.
+3. `await` faz join e propaga a falha original; `cancelar(t)` marca flag e a tarefa termina
+   `Cancelled` no próximo ponto seguro; teste de cancelamento < 500 ms.
 
 ## Decisões tomadas (não reabrir)
 
 - `|<` agrega e liga ao nome à direita; forma expressiva adiada (16 conflitos shift/reduce).
 - Modo de processo e dispositivo são decisões de runtime, sem sintaxe nova.
 - `fork` só em processo single-thread (guarda por `/proc/self/status`).
-- GPU sem `fp64`: kernels em `float` e testes com tolerância; não prometer exatidão de `double`.
-- Custo do probe: ~3–4 s por execução (spawn do Python + init do OpenCL). O worker persistente
-  da E4 elimina isso quando o programa usa GPU de verdade.
+- GPU: `float` obrigatório (sem fp64 no device); `auto` = CPU por medição, GPU explícita.
+- Para a GPU ganhar seria preciso buffer residente + handles (1 transporte para k operações);
+  registrado como próximo passo pós-E7, não entra agora.
 - `make test` puro não é usado em iteração (chama o orquestrador de Reels e gasta quota Gemini).
 
 ## Arquivos tocados
 
-- `backend/runtime.c` (E1, E2, E3), `backend/devices.[ch]`, `tools/pifari_worker.py`
+- `backend/runtime.c` (E1–E4), `backend/devices.[ch]`, `backend/gpu_client.[ch]`,
+  `tools/pifari_worker.py`
 - `frontend/parser.y` (revertido ao estado de 7 conflitos)
-- `examples/conc_fluxos.pif`, `examples/conc_processos.pif`, `examples/gpu_dispositivos.pif`
-- `Makefile` (`test-gpu`), `docs/SPEC_CONCORRENCIA.md`, `docs/EXECUCAO.md`
+- `examples/conc_fluxos.pif`, `conc_processos.pif`, `gpu_dispositivos.pif`, `gpu_affine.pif`
+- `Makefile` (`test-gpu`), `docs/SPEC_CONCORRENCIA.md`, `docs/BENCHMARKS_GPU.md`, `docs/EXECUCAO.md`
 - `../Definicao_Pifari_v3.tex` (fora do repo, §231–238)
