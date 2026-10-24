@@ -1,0 +1,4 @@
+quantidade: 2
+cpu:0 | cpu | CPU local (12 threads) | mem: 0 MB | ops: 15
+gpu:0 | opencl | Intel(R) Iris(R) Xe Graphics | mem: 7102 MB | ops: 7
+selecionado: cpu:0

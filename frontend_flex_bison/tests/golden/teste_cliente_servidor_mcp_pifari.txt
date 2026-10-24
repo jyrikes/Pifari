@@ -1,0 +1,7 @@
+Servidor MCP Pifari conectado: true tools: 4 resources: 1
+Manifesto: {"server":"pifari-native-mcp","language":"Pifari","protocol":"2025-03-26","features":["jit","f64_array","fused_chain","matmul"]}
+Echo MCP Pifari: PONG:ola_pifari_mcp
+Tarefas concluidas no servidor MCP Pifari: 3
+Resultado soma_quadrados(200000): 2666636666800000
+Resultado processar_vetor_f64(50000): 7743882.0005625
+Resultado matmul_bench(20): 3042.5

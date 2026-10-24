@@ -314,3 +314,18 @@ Semântica normativa em `docs/SPEC_CONCORRENCIA.md`. Coberto por `make test-core
 - `dispositivos()` / `usar(id)`: descoberta de CPU e GPU (OpenCL). O kernel roda na Iris Xe,
   mas o transporte WSL↔Windows domina: `docs/BENCHMARKS_GPU.md` registra a GPU ~7–8× mais lenta
   nesses tamanhos, então `auto` permanece CPU e a GPU é escolha explícita.
+
+## Tipos, efeitos e otimização (2026-10-24)
+
+- **Tipos verificados**: `=:` confere o valor (com promoção `int → float`), parâmetros e
+  retorno podem ser anotados (`function f(a: int) -> float`) e `pifari --check` valida antes
+  de executar. Semântica completa em `docs/SPEC_SEMANTICA.md`.
+- **Efeitos**: cada função é classificada em puro/leitura/escrita/io; só `puro` pode virar
+  kernel nativo. Consultável em Pifari com `efeitos("nome")`.
+- **Planos**: `PIFARI_OPT=0|1|2`; `PIFARI_OPT_DEBUG=1` mostra a decisão. JIT com tiering
+  (compila depois de 16 chamadas ou 50 ms) em vez de sempre.
+- **Aquecimento**: `~/.cache/pifari/` guarda `.so` e um manifesto por função; a segunda
+  execução do mesmo programa entra no JIT na primeira chamada (~78× mais rápida na carga de
+  teste). `PIFARI_WARMUP=off` desliga.
+- **Prova**: `make test-equiv` compara saída byte a byte entre `OPT=0` e `OPT=2`;
+  `make test-golden` congela 23 programas. Números em `docs/OTIMIZACOES.md`.

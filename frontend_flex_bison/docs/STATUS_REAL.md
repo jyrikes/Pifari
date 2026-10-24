@@ -115,3 +115,20 @@ Correções aplicadas nesta rodada:
    (`-7 // 2 == -3`, `-7 % 2 == -1`).
 4. **Diretivas não implementadas falham** em vez de avisar e seguir.
 5. Semântica observável documentada em `docs/SPEC_SEMANTICA.md`.
+
+## Atualização 2026-10-24 (F0–F5 — tipos, efeitos e otimização)
+
+| Entrega | Estado |
+|---|---|
+| Semântica observável (`docs/SPEC_SEMANTICA.md`) | concluída |
+| Tipos verificados (`=:`, parâmetros, retorno) | concluída |
+| `pifari --check` (estático) | concluída |
+| Efeitos puro/leitura/escrita/io + `efeitos()` | concluída |
+| Planos `PIFARI_OPT=0|1|2` + log + equivalência | concluída |
+| Tiering do JIT | concluída |
+| Cache persistente + manifesto de aquecimento | concluída |
+| Golden outputs + benchmarks | concluída |
+| IR estendido para laço `for` puro | **pendente** |
+
+Testes: `test-core`, `check-core`, `test-equiv`, `test-golden` e `test-gpu` verdes.
+Números em `docs/OTIMIZACOES.md`; decisões e pendências em `docs/EXECUCAO.md`.

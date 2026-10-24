@@ -1,0 +1,12 @@
+MCP conectado: true tools: 6 resources: 2
+Recurso MCP: {"engine":"Pifari-Agent-Runtime","version":"3.1","mcp":"2025-03-26"}
+Teste Policy Engine (esperado ERR_POLICY_DENIED): ERR:ERR_POLICY_DENIED:Policy Engine negou acesso do agente 'ag_coletor' a 'mcp_lab.restricted_op'
+Tarefas concluidas com sucesso no DAG: 3
+Status t_coleta_paralela: COMPLETED
+Status t_analise_paralela: COMPLETED
+Status t_sintese_dependente: COMPLETED
+Status t_lenta_cancelada: CANCELLED
+Resultado no Context Store: RELATORIO_CONSOLIDADO | Coleta=[dataset=sensor_alpha;samples=4;values=[12.5,18.0,24.5,31.0];checksum=OK] | Analise=[analysis_for=(sensor_alpha_window);mean=21.50;max=31.00;anomaly=false;confidence=0.99] | Status=VERIFICADO
+Artefato salvo com checksum FNV-1a: e7a2afe8911e0edb
+Progresso final da missao (%): 100
+Telemetria JSON exportada: true
