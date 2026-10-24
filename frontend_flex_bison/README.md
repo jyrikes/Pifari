@@ -297,3 +297,20 @@ O runtime inclui uma plataforma modular em C (`backend/agent_runtime.[ch]` e `ba
 - [docs/PLANO_TESTES_MCP.md](docs/PLANO_TESTES_MCP.md) — Matriz de cobertura de testes unitários e de integração MCP.
 - [docs/BENCHMARKS.md](docs/BENCHMARKS.md) — Resultados comparativos medidos antes e depois das otimizações.
 
+
+## Concorrência, tarefas e dispositivos (2026-10-24)
+
+Semântica normativa em `docs/SPEC_CONCORRENCIA.md`. Coberto por `make test-core`,
+`make test-conc` e `make test-gpu`:
+
+- `|>` e `>|` com escopo próprio: a variável de iteração não vaza e a falha fica por item
+  (`fluxo paralelo falhou no índice N: ...`), com os demais itens concluindo.
+- Fluxo aninhado não trava mais (roda serialmente dentro do trabalhador).
+- `modo_processos(n)` / `modo_threads()`: distribuição em processos via `fork()` e contador
+  compartilhado; resultado idêntico ao modo threads.
+- `spawn expr` / `await id` / `cancelar(id)`: tarefas com ambiente clonado e cancelamento
+  cooperativo nos laços de execução.
+- `compartilhado(v)` / `ler` / `escrever` / `incrementar`: único caminho de estado compartilhado.
+- `dispositivos()` / `usar(id)`: descoberta de CPU e GPU (OpenCL). O kernel roda na Iris Xe,
+  mas o transporte WSL↔Windows domina: `docs/BENCHMARKS_GPU.md` registra a GPU ~7–8× mais lenta
+  nesses tamanhos, então `auto` permanece CPU e a GPU é escolha explícita.

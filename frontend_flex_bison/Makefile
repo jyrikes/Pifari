@@ -2,7 +2,7 @@ CC := gcc
 FLEX := flex
 BISON := bison
 CFLAGS := -std=c11 -O3 -flto -march=native -Wall -Wextra -Wpedantic -Ifrontend -Ibackend
-.PHONY: all clean test test-fuzz benchmark test-gpu
+.PHONY: all clean test test-core test-conc test-fuzz benchmark test-gpu
 all: pifari
 parser.tab.c parser.tab.h &: frontend/parser.y frontend/ast.h backend/runtime.h
 	$(BISON) -Wall -d -o parser.tab.c frontend/parser.y
@@ -103,3 +103,46 @@ clean:
 
 test-gpu: pifari
 	./pifari examples/gpu_dispositivos.pif
+
+test-core: pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent_runtime
+	./test_optimizer
+	./test_ast_ir
+	./test_dirac
+	./test_native_kernel
+	./test_agent_runtime
+	./pifari examples/runtime_map_fused.pif
+	./pifari examples/runtime_fusion.pif
+	./pifari examples/runtime_numeric_tools.pif
+	./pifari examples/teste_range_preguicoso.pif
+	./pifari examples/runtime_lista.pif
+	./pifari examples/runtime_operadores.pif
+	./pifari examples/runtime_vm.pif
+	./pifari examples/runtime_vm_index_compare.pif
+	./pifari examples/runtime_fused_chain.pif
+	./pifari examples/typed_arrays.pif
+	./pifari examples/runtime_indexed_native.pif
+	./pifari examples/runtime_matriz.pif
+	./pifari examples/runtime_matmul.pif
+	./pifari examples/runtime_otimizacoes.pif
+	./pifari examples/runtime_slots_pool.pif
+	./pifari examples/runtime_fluxo.pif
+	./pifari examples/fluxo_sequencial.pif
+	./pifari examples/fluxo_paralelo.pif
+	./pifari examples/fluxo_coleta.pif
+	./pifari examples/fluxo_sincronizacao.pif
+	./pifari examples/conc_fluxos.pif
+	./pifari examples/conc_processos.pif
+	./pifari examples/conc_tarefas.pif
+	./pifari examples/funcoes.pif
+	./pifari examples/nova_sintaxe_fluxo.pif
+	./pifari examples/paralelismo_assincrono.pif
+	./pifari examples/mlp_xor.pif
+	./pifari examples/mlp_xor_fluxo.pif
+	./pifari examples/prototipo_multiagente_mcp.pif
+	./pifari examples/teste_cliente_servidor_mcp_pifari.pif
+
+test-conc: pifari
+	./pifari examples/conc_fluxos.pif
+	./pifari examples/conc_processos.pif
+	./pifari examples/conc_tarefas.pif
+	./pifari examples/conc_shared.pif
