@@ -232,10 +232,10 @@ Estados conceituais: \texttt{Created}, \texttt{Ready}, \texttt{Running}, \texttt
 \begin{itemize}
 \item \texttt{|>} encadeia etapas e, na forma iterável, aplica a operação a cada elemento;
 \item \texttt{>|} inicia distribuição paralela explícita. Para coleções, a política padrão recomendada é dividir os elementos entre trabalhadores, preservando índice de origem;
-\item \texttt{|<} é uma barreira de junção: espera todas as tarefas do grupo e agrega os resultados na ordem original;
-\item \texttt{<|} encaminha/aplica um valor à operação à direita, mas não inicia paralelismo por si só.
+\item \texttt{|<} é a barreira de junção: espera todas as tarefas do grupo e agrega os resultados na ordem original. Quando o operando à direita é um identificador ainda não ligado no escopo, ele recebe a lista agregada (forma de ligação); caso contrário, a expressão \texttt{|<} produz a lista;
+\item \texttt{<|} avalia o fluxo à esquerda até a conclusão e só então avalia a expressão à direita; não inicia paralelismo por si só.
 \end{itemize}
-A sintaxe concreta de ramos múltiplos, identificadores de ramo e captura de resultados deve ser definida por produção gramatical antes de implementar esses operadores. Um valor individual não deve ser duplicado ou compartilhado entre ramos implicitamente quando isso puder criar corrida; deve-se especificar cópia, empréstimo seguro ou compartilhamento sincronizado.
+Nenhum operador de fluxo propaga escrita para o escopo do chamador: a variável de iteração e as variáveis locais vivem em um frame próprio do fluxo, e a base visível é somente leitura. Compartilhamento entre trabalhadores só ocorre por mecanismo explícito de célula protegida. O modo de distribuição (threads ou processos) e o dispositivo de execução não alteram o comportamento observável.
 \subsection{Falhas e cancelamento}
 A regra de projeto é que uma falha fica associada à tarefa que falhou. Tarefas independentes continuam; tarefas dependentes não podem consumir resultado inexistente e passam a falhar, aguardar recuperação ou ser canceladas conforme política explícita. O runtime não deve cancelar todo o processo por uma falha isolada, salvo se a falha for não recuperável ou o programa solicitar essa política.
 O cancelamento é cooperativo. Tarefas verificam cancelamento em pontos seguros, como espera, início de etapa e chamadas de runtime. Operações nativas que não possam ser interrompidas devem declarar essa limitação. Recursos adquiridos devem ser liberados por mecanismo equivalente a \texttt{finally}/RAII.
