@@ -1,0 +1,11 @@
+@ Descoberta de dispositivos de execução (docs/SPEC_CONCORRENCIA.md §7, caso C11)
+@ cpu:0 sempre existe. gpu:0 aparece quando o worker encontra OpenCL utilizável.
+
+ds = dispositivos()
+print("quantidade:", len(ds))
+
+for d in ds
+  print(d[0], "|", d[1], "|", d[2], "| mem:", d[3], "MB | ops:", d[4])
+
+usar("cpu:0")
+print("selecionado: cpu:0")

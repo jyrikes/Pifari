@@ -128,9 +128,9 @@ acesso; nenhuma corrida lógica é detectada automaticamente (spec §246).
 | Recurso | Estado | Etapa |
 |---|---|---|
 | `|>` / `>|` / `|<` / `<|` | implementado | — |
-| Iterador não vaza (ambos os fluxos) | pendente | E1 |
-| Falha por índice | pendente | E1 |
-| Fluxo aninhado sem deadlock | pendente | E1 |
+| Iterador não vaza (ambos os fluxos) | implementado | E1 |
+| Falha por índice | implementado | E1 |
+| Fluxo aninhado sem deadlock | implementado | E1 |
 | `modo_processos(n)` / `modo_threads()` | pendente | E2 |
 | `dispositivos()` / `usar()` | pendente | E3 |
 | Offload OpenCL (iGPU / remoto) | pendente | E4 |

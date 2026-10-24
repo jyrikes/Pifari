@@ -6,6 +6,7 @@
 #include "native_kernel.h"
 #include "agent_runtime.h"
 #include "mcp_server.h"
+#include "devices.h"
 #include <errno.h>
 #include <math.h>
 #include <float.h>
@@ -429,6 +430,40 @@ static Value eval_call(const Node*n){
  if(!strcmp(name,"modo_threads")){
   if(count!=0){fail(n,"modo_threads não espera argumentos");return vnull();}
   execution_processes=0;execution_workers=0;return vnull();
+ }
+ if(!strcmp(name,"dispositivos")){
+  if(count!=0){fail(n,"dispositivos não espera argumentos");return vnull();}
+  pifari_devices_probe();
+  int total=pifari_devices_count();
+  Value out=list_new((size_t)(total>0?total:0));
+  if(out.type!=V_LIST){fail(n,"memória insuficiente ao listar dispositivos");return vnull();}
+  for(int i=0;i<total;i++){
+   const PifariDevice*d=pifari_devices_at(i);
+   Value rec=list_new(5);
+   if(rec.type!=V_LIST){free_value(out);fail(n,"memória insuficiente ao listar dispositivos");return vnull();}
+   rec.as.list.items[0]=vstr(d->id);
+   rec.as.list.items[1]=vstr(d->backend);
+   rec.as.list.items[2]=vstr(d->name);
+   rec.as.list.items[3]=vint(d->mem_mb);
+   rec.as.list.items[4]=vint((long long)d->ops);
+   out.as.list.items[i]=rec;
+  }
+  return out;
+ }
+ if(!strcmp(name,"usar")){
+  if(count!=1){fail(n,"usar espera o id do dispositivo");return vnull();}
+  Value idv=eval(args->children[0]);
+  if(runtime_failed){free_value(idv);return vnull();}
+  if(idv.type!=V_STRING){free_value(idv);fail(n,"usar espera texto, por exemplo usar(\"gpu:0\")");return vnull();}
+  pifari_devices_probe();
+  int index=pifari_devices_select(idv.as.s);
+  if(index<0){
+   free_value(idv);
+   fail(n,"dispositivo não encontrado; use dispositivos() para listar (cpu:0 sempre existe)");
+   return vnull();
+  }
+  free_value(idv);
+  return vnull();
  }
  if(!strcmp(name,"array_set")){
   if(count!=3){fail(n,"array_set espera array, índice e valor");return vnull();}

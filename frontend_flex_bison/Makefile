@@ -2,7 +2,7 @@ CC := gcc
 FLEX := flex
 BISON := bison
 CFLAGS := -std=c11 -O3 -flto -march=native -Wall -Wextra -Wpedantic -Ifrontend -Ibackend
-.PHONY: all clean test test-fuzz benchmark
+.PHONY: all clean test test-fuzz benchmark test-gpu
 all: pifari
 parser.tab.c parser.tab.h &: frontend/parser.y frontend/ast.h backend/runtime.h
 	$(BISON) -Wall -d -o parser.tab.c frontend/parser.y
@@ -36,7 +36,9 @@ backend/memory_plan.o: backend/memory_plan.c backend/memory_plan.h
 	$(CC) $(CFLAGS) -c $< -o $@
 backend/reversible.o: backend/reversible.c backend/reversible.h
 	$(CC) $(CFLAGS) -c $< -o $@
-pifari: frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o
+backend/devices.o: backend/devices.c backend/devices.h
+	$(CC) $(CFLAGS) -c $< -o $@
+pifari: frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o backend/devices.o
 	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm -ldl
 test_optimizer: tests/test_optimizer.c backend/optimizer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o
 	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm
@@ -94,4 +96,7 @@ benchmark: pifari
 	python3 examples/benchmark_mlp_xor.py
 	./pifari examples/carga_fluxo_puro.pif
 clean:
-	rm -f pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent_runtime parser.tab.c parser.tab.h lex.yy.c parser.output frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o
+	rm -f pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent_runtime parser.tab.c parser.tab.h lex.yy.c parser.output frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o backend/devices.o
+
+test-gpu: pifari
+	./pifari examples/gpu_dispositivos.pif
