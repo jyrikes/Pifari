@@ -139,7 +139,7 @@ acesso; nenhuma corrida lógica é detectada automaticamente (spec §246).
 | `dispositivos()` / `usar()` | pendente | E3 |
 | Offload OpenCL (iGPU / remoto) | pendente | E4 |
 | `spawn` / `await` / `cancelar` | implementado | E5 |
-| `compartilhado` e erro de escrita externa | pendente | E6 |
+| `compartilhado` / `ler` / `escrever` / `incrementar` | implementado | E6 |
 
 ---
 

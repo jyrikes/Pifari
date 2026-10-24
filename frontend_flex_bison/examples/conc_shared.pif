@@ -1,0 +1,23 @@
+@ Célula compartilhada (docs/SPEC_CONCORRENCIA.md §6, caso C8)
+@ 4 tarefas x 1000 incrementos precisam dar exatamente 4000: o mutex da célula
+@ impede atualização perdida, que é o que aconteceria com contador "solto".
+
+function trabalha(celula)
+  for i in range(1000)
+    incrementar(celula, 1)
+  return 0
+
+c = compartilhado(0)
+t1 = spawn trabalha(c)
+t2 = spawn trabalha(c)
+t3 = spawn trabalha(c)
+t4 = spawn trabalha(c)
+await t1
+await t2
+await t3
+await t4
+
+print("contador:", ler(c))
+
+escrever(c, 7)
+print("apos escrever:", ler(c))

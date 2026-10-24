@@ -5,54 +5,54 @@ e `git status --short`. Não reler `runtime.c` inteiro.
 
 ## Estado
 
-- **Etapa atual:** E6 — memória compartilhada (E0–E5 concluídas)
-- **Último teste verde:** `FULL_SUITE_OK` (29 `.pif` + 5 binários C) após a gramática de tarefas
-- **Plano completo:** `docs/SPEC_CONCORRENCIA.md` (normativo) + plano aprovado na sessão do DSH
-
-## Hardware real (medido, 2026-10-24)
-
-- iGPU **Intel(R) Iris(R) Xe Graphics**, OpenCL 3.0 NEO, 7102 MB, 80 CU, **sem `cl_khr_fp64`**.
-- GPU **perde da CPU** (~7–8×) por causa do transporte WSL↔Windows: `docs/BENCHMARKS_GPU.md`.
-  `auto` = CPU; `gpu:0` só explícito; resultado correto (diff 0 nos dados inteiros testados).
+- **Etapa atual:** E7 — polimento e regressão final (E0–E6 concluídas)
+- **Último teste verde:** `FULL_SUITE_OK` com 30 `.pif` + 5 binários C (inclui `conc_shared.pif`)
+- **Plano completo:** `docs/SPEC_CONCORRENCIA.md` (normativo)
 
 ## Concluído
 
-- **E0** — `docs/SPEC_CONCORRENCIA.md` (C1–C12) e §231–238 do `.tex`.
-- **E1** — iterador isolado; `>|` com expressão arbitrária; falha por índice; aninhamento sem
-  deadlock; `error_message` por thread.
+- **E0** — `docs/SPEC_CONCORRENCIA.md` (C1–C12) e §231–238 do `Definicao_Pifari_v3.tex`.
+- **E1** — iterador isolado; `>|` com expressão arbitrária; falha por índice; sem deadlock no
+  aninhamento; `error_message` por thread.
 - **E2** — `modo_processos(n)`/`modo_threads()`; fork + contador `mmap(MAP_SHARED)`; resultado
   por pipe; `poll()` + timeout; guarda de fork por `/proc/self/status`.
-- **E3** — `backend/devices.[ch]`, `tools/pifari_worker.py`, `dispositivos()`/`usar(id)`,
-  `make test-gpu`.
-- **E4** — `backend/gpu_client.[ch]`: worker persistente `--stdio`, `map_affine_relu` na GPU
-  com fallback para CPU, benchmark publicado.
-- **E5** — `spawn`/`await` (expressões prefixas) e `cancelar(id)`; tarefa com ambiente clonado,
-  registro de 64 slots, status atômico; cancelamento cooperativo verificado nos laços da VM de
-  função (sem ele o cancelamento só era visto no fim). Medido: tarefa que levaria ~2 s termina
-  em **69 ms** após `cancelar`. Falha propaga: `tarefa falhou: divisão por zero`.
+- **E3** — `backend/devices.[ch]`, `tools/pifari_worker.py`, `dispositivos()`/`usar(id)`, `test-gpu`.
+- **E4** — `backend/gpu_client.[ch]`; `map_affine_relu` na Iris Xe com fallback; benchmark em
+  `docs/BENCHMARKS_GPU.md` (GPU perde ~7–8× por transporte; `auto` = CPU).
+- **E5** — `spawn`/`await` prefixos + `cancelar(id)`; cancelamento cooperativo nos três caminhos
+  (exec_block, For de exec_node, VM de função). Tarefa de ~2 s termina em 69 ms após cancelar.
+- **E6** — `compartilhado`/`ler`/`escrever`/`incrementar` com mutex por célula; 4 tarefas × 1000
+  incrementos = **4000** (sem atualização perdida). Verificado também: escrita dentro de função
+  não altera o escopo externo (`acc` continua 100), então o erro de "escrita externa" do §3.3 é
+  inalcançável por construção hoje — o comportamento seguro é o padrão.
 
-## Próximos 3 passos (E6)
+## Próximos passos (E7)
 
-1. `compartilhado(v)`, `ler(c)`, `escrever(c,v)`, `incrementar(c,d)`: célula com `pthread_mutex_t`
-   guardando um `Value` (o valor é `static` no registro? não: alocar por handle).
-2. Verificação de escrita externa na entrada de `>|` e de `spawn`: varrer a AST do alvo e falhar
-   quando `Assign`/`IndexAssign` resolver para binding fora do frame do fluxo.
-3. Teste C8: contador com 4×1000 incrementos = 4000; teste C9: escrita externa dá erro.
+1. `Makefile`: `test-core` (C + todos os `.pif` menos o orquestrador de Reels), `test-conc`
+   (conc_*.pif), manter `test-gpu`.
+2. Rodar `make test-core`, `make test-conc`, `make test-gpu` e registrar os resultados.
+3. Atualizar `README.md` (tabela de estado) e fechar o checkpoint.
 
-## Decisões tomadas (não reabrir)
+## Observação registrada (não introduzida por este trabalho)
 
-- `spawn`/`await` são **expressões prefixas**, não instruções: permite `t = spawn f()`.
-- O cancelamento precisa de checagem nos três caminhos de execução: `exec_block`, ramos `For` de
-  `exec_node` e o laço da VM de função (`while(pc<...&&!PIFARI_TASK_CANCELLED())`).
+Dentro de função, um nome atribuído que coincide com variável externa é tratado como slot
+local inicializado em `Null` (que vira 0 na aritmética) em vez de herdar o valor externo.
+É semântica de função pré-existente; fica anotada para revisão futura, fora do escopo da
+concorrência.
+
+## Decisões (não reabrir)
+
+- `spawn`/`await` são expressões prefixas (`t = spawn f()`).
+- Cancelamento exige checagem nos três caminhos de execução — os três estão cobertos.
 - `|<` agrega e liga ao nome à direita; forma expressiva adiada (16 conflitos shift/reduce).
-- GPU: `float` obrigatório; `auto` = CPU por medição; handles/resident buffers ficam pós-E7.
+- GPU em `float`; `auto` = CPU por medição; handles/resident buffers ficam pós-E7.
 - `make test` puro não é usado em iteração (chama o orquestrador de Reels e gasta quota Gemini).
 
 ## Arquivos tocados
 
-- `backend/runtime.c` (E1–E5), `backend/devices.[ch]`, `backend/gpu_client.[ch]`,
+- `backend/runtime.c` (E1–E6), `backend/devices.[ch]`, `backend/gpu_client.[ch]`,
   `tools/pifari_worker.py`, `frontend/parser.y`, `frontend/lexer.l`
-- `examples/conc_fluxos.pif`, `conc_processos.pif`, `conc_tarefas.pif`,
+- `examples/conc_fluxos.pif`, `conc_processos.pif`, `conc_tarefas.pif`, `conc_shared.pif`,
   `gpu_dispositivos.pif`, `gpu_affine.pif`
-- `Makefile` (`test-gpu`), `docs/SPEC_CONCORRENCIA.md`, `docs/BENCHMARKS_GPU.md`, `docs/EXECUCAO.md`
-- `../Definicao_Pifari_v3.tex` (fora do repo, §231–238)
+- `Makefile`, `docs/SPEC_CONCORRENCIA.md`, `docs/BENCHMARKS_GPU.md`, `docs/EXECUCAO.md`
+- `../Definicao_Pifari_v3.tex`

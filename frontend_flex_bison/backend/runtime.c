@@ -93,6 +93,7 @@ static size_t execution_workers;
 static int thread_pool_active;
 #define PIFARI_PROCESS_TIMEOUT_MS 60000
 #define PIFARI_MAX_PROCESSES 64
+#define PIFARI_MAX_SHARED 64
 /* Optional counters: disabled by default so normal execution pays only one branch. */
 static int profiling_enabled;
 static unsigned long long profile_eval_nodes, profile_binding_lookups, profile_value_copies, profile_bytecode_ops;
@@ -106,6 +107,11 @@ static int pifari_task_cancel(long long id);
 static Value pifari_task_await(const Node *at, long long id);
 static void pifari_tasks_shutdown(void);
 static int pifari_task_cancelled(void);
+static long long pifari_shared_new(Value v);
+static int pifari_shared_write(long long id, Value v);
+static Value pifari_shared_read(long long id, int *ok);
+static Value pifari_shared_add(long long id, double delta, int *ok);
+static void pifari_shared_shutdown(void);
 #define PIFARI_TASK_CANCELLED() pifari_task_cancelled()
 static Binding *clone_bindings(Binding *src);
 static Binding *find_binding(const char *name);
@@ -438,6 +444,39 @@ static Value eval_call(const Node*n){
  if(!strcmp(name,"modo_threads")){
   if(count!=0){fail(n,"modo_threads não espera argumentos");return vnull();}
   execution_processes=0;execution_workers=0;return vnull();
+ }
+ if(!strcmp(name,"compartilhado")){
+  if(count!=1){fail(n,"compartilhado espera o valor inicial");return vnull();}
+  Value v=eval(args->children[0]);
+  if(runtime_failed){free_value(v);return vnull();}
+  long long id=pifari_shared_new(v);
+  if(id<0){free_value(v);fail(n,"limite de %d células compartilhadas atingido",PIFARI_MAX_SHARED);return vnull();}
+  return vint(id);
+ }
+ if(!strcmp(name,"ler")||!strcmp(name,"escrever")||!strcmp(name,"incrementar")){
+  const int is_read=!strcmp(name,"ler"),is_write=!strcmp(name,"escrever");
+  if(count<(is_read?1:2)){fail(n,"%s espera a célula%s",name,is_read?"":" e o valor");return vnull();}
+  Value idv=eval(args->children[0]);
+  if(runtime_failed){free_value(idv);return vnull();}
+  if(idv.type!=V_INT){free_value(idv);fail(n,"%s espera o identificador devolvido por compartilhado",name);return vnull();}
+  long long id=idv.as.i;free_value(idv);
+  int ok=1;
+  if(is_read){
+   Value out=pifari_shared_read(id,&ok);
+   if(!ok){fail(n,"célula compartilhada inválida");return vnull();}
+   return out;
+  }
+  Value v=eval(args->children[1]);
+  if(runtime_failed){free_value(v);return vnull();}
+  if(is_write){
+   if(pifari_shared_write(id,v)!=0){fail(n,"célula compartilhada inválida");return vnull();}
+   return vnull();
+  }
+  if(v.type!=V_INT&&v.type!=V_FLOAT){free_value(v);fail(n,"incrementar espera um delta numérico");return vnull();}
+  double delta=v.type==V_INT?(double)v.as.i:v.as.f;free_value(v);
+  Value out=pifari_shared_add(id,delta,&ok);
+  if(!ok){fail(n,"incrementar exige célula compartilhada com valor numérico");return vnull();}
+  return out;
  }
  if(!strcmp(name,"cancelar")){
   if(count!=1){fail(n,"cancelar espera o identificador da tarefa");return vnull();}
@@ -1504,6 +1543,75 @@ static void *persistent_worker(void*opaque){
  }
  return NULL;
 }
+/* ===== Células compartilhadas =====
+   Único caminho pelo qual trabalhadores compartilham estado (SPEC §3.5 e §6).
+   Cada célula tem mutex próprio; leitura/escrita/incremento são atômicos. */
+#define PIFARI_MAX_SHARED 64
+typedef struct { pthread_mutex_t lock; Value value; int used; } PifariShared;
+static PifariShared pifari_shared_cells[PIFARI_MAX_SHARED];
+static pthread_mutex_t shared_registry_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static long long pifari_shared_new(Value v){
+ long long slot=-1;
+ pthread_mutex_lock(&shared_registry_mutex);
+ for(int i=0;i<PIFARI_MAX_SHARED;i++)if(!pifari_shared_cells[i].used){slot=i;break;}
+ if(slot>=0){
+  PifariShared*s=&pifari_shared_cells[slot];
+  s->used=1;pthread_mutex_init(&s->lock,NULL);s->value=v;
+ }
+ pthread_mutex_unlock(&shared_registry_mutex);
+ return slot;
+}
+static PifariShared *pifari_shared_get(long long id){
+ if(id<0||id>=PIFARI_MAX_SHARED||!pifari_shared_cells[id].used)return NULL;
+ return &pifari_shared_cells[id];
+}
+static int pifari_shared_write(long long id,Value v){
+ PifariShared*s=pifari_shared_get(id);
+ if(!s){free_value(v);return -1;}
+ pthread_mutex_lock(&s->lock);
+ free_value(s->value);s->value=v;
+ pthread_mutex_unlock(&s->lock);
+ return 0;
+}
+static Value pifari_shared_read(long long id,int*ok){
+ PifariShared*s=pifari_shared_get(id);
+ if(!s){*ok=0;return vnull();}
+ pthread_mutex_lock(&s->lock);
+ Value out=copy_value(s->value);
+ pthread_mutex_unlock(&s->lock);
+ *ok=1;
+ return out;
+}
+static Value pifari_shared_add(long long id,double delta,int*ok){
+ PifariShared*s=pifari_shared_get(id);
+ if(!s){*ok=0;return vnull();}
+ pthread_mutex_lock(&s->lock);
+ Value current=s->value;
+ if(current.type!=V_INT&&current.type!=V_FLOAT){
+  pthread_mutex_unlock(&s->lock);*ok=0;return vnull();
+ }
+ double base=current.type==V_INT?(double)current.as.i:current.as.f;
+ double next=base+delta;
+ Value out;
+ if(current.type==V_INT&&delta==(double)(long long)delta)out=vint((long long)next);
+ else out=vfloat(next);
+ s->value=copy_value(out);
+ pthread_mutex_unlock(&s->lock);
+ *ok=1;
+ return out;
+}
+static void pifari_shared_shutdown(void){
+ for(int i=0;i<PIFARI_MAX_SHARED;i++){
+  if(!pifari_shared_cells[i].used)continue;
+  pthread_mutex_lock(&pifari_shared_cells[i].lock);
+  free_value(pifari_shared_cells[i].value);
+  pifari_shared_cells[i].value=vnull();
+  pthread_mutex_unlock(&pifari_shared_cells[i].lock);
+  pthread_mutex_destroy(&pifari_shared_cells[i].lock);
+  pifari_shared_cells[i].used=0;
+ }
+}
 /* ===== Tarefas: spawn / await / cancelar =====
    `spawn expr` cria e inicia imediatamente; o id inteiro devolvido indexa o
    registro. A tarefa roda com ambiente clonado (mesmo isolamento do worker) e o
@@ -2215,6 +2323,7 @@ int runtime_execute(const Node*program){
  globals=NULL;local_frame=NULL;memset(binding_buckets,0,sizeof(binding_buckets));runtime_failed=0;return_active=0;return_value=vnull();
  free_function_registry();
  exec_node(program);
+ pifari_shared_shutdown();
  pifari_tasks_shutdown();
  pool_shutdown();
  pifari_gpu_shutdown();
