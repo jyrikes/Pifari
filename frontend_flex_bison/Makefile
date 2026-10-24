@@ -38,9 +38,11 @@ backend/reversible.o: backend/reversible.c backend/reversible.h
 	$(CC) $(CFLAGS) -c $< -o $@
 backend/gpu_client.o: backend/gpu_client.c backend/gpu_client.h backend/devices.h
 	$(CC) $(CFLAGS) -c $< -o $@
+backend/types.o: backend/types.c backend/types.h
+	$(CC) $(CFLAGS) -c $< -o $@
 backend/devices.o: backend/devices.c backend/devices.h
 	$(CC) $(CFLAGS) -c $< -o $@
-pifari: frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o backend/devices.o backend/gpu_client.o
+pifari: frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o backend/devices.o backend/types.o backend/gpu_client.o
 	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm -ldl
 test_optimizer: tests/test_optimizer.c backend/optimizer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o
 	$(CC) $(CFLAGS) -pthread -o $@ $^ -lm
@@ -99,7 +101,7 @@ benchmark: pifari
 	python3 examples/benchmark_mlp_xor.py
 	./pifari examples/carga_fluxo_puro.pif
 clean:
-	rm -f pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent_runtime parser.tab.c parser.tab.h lex.yy.c parser.output frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o backend/devices.o backend/gpu_client.o
+	rm -f pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent_runtime parser.tab.c parser.tab.h lex.yy.c parser.output frontend/parser.o frontend/lexer.o backend/runtime.o backend/optimizer.o backend/ast_ir.o backend/numeric_buffer.o backend/operator_engine.o backend/memory_plan.o backend/reversible.o backend/dirac.o backend/native_kernel.o backend/mcp_gateway.o backend/mcp_server.o backend/agent_runtime.o backend/devices.o backend/types.o backend/gpu_client.o
 
 test-gpu: pifari
 	./pifari examples/gpu_dispositivos.pif
@@ -146,3 +148,4 @@ test-conc: pifari
 	./pifari examples/conc_processos.pif
 	./pifari examples/conc_tarefas.pif
 	./pifari examples/conc_shared.pif
+	./pifari examples/tipos.pif

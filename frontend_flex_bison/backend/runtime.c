@@ -8,6 +8,7 @@
 #include "mcp_server.h"
 #include "devices.h"
 #include "gpu_client.h"
+#include "types.h"
 #include <errno.h>
 #include <math.h>
 #include <float.h>
@@ -48,7 +49,7 @@ static Value f64_array_new(size_t length){
  if(length){if(length>SIZE_MAX/sizeof(double)){free(a);v.type=V_NULL;return v;}void*p=NULL;if(posix_memalign(&p,64,length*sizeof(double))!=0){free(a);v.type=V_NULL;return v;}a->data=p;memset(a->data,0,length*sizeof(double));}
  v.as.array=a;return v;
 }
-typedef struct Binding { char *name; Value value; struct Binding *next, *hash_next; } Binding;
+typedef struct Binding { char *name; Value value; PifariType kind; struct Binding *next, *hash_next; } Binding;
 typedef struct LocalFrame { Binding *slots; size_t count; Binding *buckets[256]; struct LocalFrame *parent; const Node *owner; } LocalFrame;
 static _Thread_local LocalFrame *local_frame;
 typedef struct FunctionDef {
@@ -149,6 +150,19 @@ static void fail(const Node*n,const char*fmt,...){
  va_end(ap);
  fprintf(stderr,"Pifari:%d:%d: erro de execução: ",n?n->line:1,n?n->column:1);
  fputs(error_message,stderr);fputc('\n',stderr);
+}
+static PifariType value_type_of(Value v){
+ switch(v.type){
+  case V_INT:return PT_INT;
+  case V_FLOAT:return PT_FLOAT;
+  case V_BOOL:return PT_BOOL;
+  case V_STRING:return PT_STR;
+  case V_LIST:return PT_LIST;
+  case V_F64_ARRAY:return PT_F64ARRAY;
+  case V_RANGE:return PT_RANGE;
+  case V_NULL:return PT_NULL;
+  default:return PT_ANY;
+ }
 }
 static void free_value(Value v){
  if(v.type==V_STRING)free(v.as.s);
@@ -2334,10 +2348,31 @@ static void exec_node(const Node*n){
  if(!strcmp(n->kind,"Assign")&&try_assign_list_append_in_place(n))return;
  if(!strcmp(n->kind,"TypedDecl")||!strcmp(n->kind,"Attribute")){
   if(!n->value||!n->count){fail(n,"declaração tipada inválida");return;}
+  const Node*type_node=n->children[0];
+  PifariType ann=PT_ANY;
+  if(type_node&&!strcmp(type_node->kind,"Type")){
+   if(!pifari_type_is_known(type_node->value)){
+    fail(n,"tipo desconhecido: '%s'",type_node->value?type_node->value:"?");
+    return;
+   }
+   ann=pifari_type_from_name(type_node->value);
+  }
   const Node*init=NULL;
   if(!strcmp(n->kind,"TypedDecl")){if(n->count>1)init=n->children[1];else if(n->count==1&&strcmp(n->children[0]->kind,"Type"))init=n->children[0];}
   Value v=init?eval(init):vnull();if(runtime_failed)return;
-  set_node_binding(n,n->value,v,n);return;
+  if(init){
+   PifariType actual=value_type_of(v);
+   int compat=pifari_type_assignable(ann,actual);
+   if(!compat){
+    fail(n,"'%s' espera %s, recebeu %s",n->value,pifari_type_name(ann),pifari_type_name(actual));
+    free_value(v);return;
+   }
+   if(compat==2&&v.type==V_INT)v=vfloat((double)v.as.i);
+  }
+  set_node_binding(n,n->value,v,n);
+  Binding*bound=find_binding(n->value);
+  if(bound)bound->kind=ann;
+  return;
  }
  if(!strcmp(n->kind,"IndexAssign")){
   Binding *binding=n->value?node_target_binding(n,n->value):NULL;if(!binding){fail(n,"array/lista '%s' não foi declarado",n->value?n->value:"?");return;}

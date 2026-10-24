@@ -1,0 +1,20 @@
+@ Anotações de tipo verificadas (docs/SPEC_SEMANTICA.md §2–§5, etapa F1).
+@ Tipos desconhecidos e valores incompatíveis falham com linha e coluna.
+
+idade =: int(20)
+altura =: float(1.75)
+nome =: str("Ana")
+aprovado =: bool(true)
+promovido =: float(3)
+
+print(idade, altura, nome, aprovado, promovido)
+
+dobro =: float(idade * 2)
+print("promocao int -> float:", dobro)
+
+depois =: int
+print("sem inicializador:", depois)
+
+contador =: int(0)
+contador = contador + 1
+print("atribuicao posterior:", contador)
