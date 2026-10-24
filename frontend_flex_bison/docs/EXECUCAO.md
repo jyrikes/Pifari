@@ -23,6 +23,7 @@ e `git status --short`. Não reler `runtime.c` inteiro (~2750 linhas).
   `PIFARI_JIT_BUDGET_MS`); `OPT=2` compila no registro.
 - **F4** — `cache.[ch]` + `warmup.txt`: cache persistente em `~/.cache/pifari`, seed por
   função, gravação atômica, `PIFARI_WARMUP=off`. Frio 2 572 ms → morno 33 ms.
+- **F3c** — JIT com aritmética checada: helpers com `__builtin_*_overflow`, divisão por zero e `LLONG_MIN/-1`; ABI `pifari_jit(arg, &err)`; paridade de erro com `OPT=0` verificada. `tests/equiv-skip.txt` lista os programas com efeito dentro de `>|` (ordem de print depende do escalonamento).
 - **F5** — `tests/golden.sh` + `make test-golden` (23 programas congelados, 10 pulados por
   não determinismo), `docs/OTIMIZACOES.md`, README e STATUS_REAL atualizados.
 

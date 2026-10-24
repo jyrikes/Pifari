@@ -1,0 +1,9 @@
+examples/funcoes.pif
+examples/fluxo_paralelo.pif
+examples/fluxo_sincronizacao.pif
+examples/nova_sintaxe_fluxo.pif
+examples/mlp_xor.pif
+examples/mlp_xor_fluxo.pif
+examples/paralelismo_assincrono.pif
+examples/test.pif
+examples/runtime_map_fused.pif

@@ -74,3 +74,19 @@ PIFARI_OPT_DEBUG=1 ./pifari programa.pif   # escolhe plano e tier-up
 PIFARI_OPT=0 ./pifari programa.pif         # referência sem otimização
 PIFARI_JIT_BUDGET_MS=5 ./pifari programa.pif  # sobe para JIT mais cedo
 ```
+
+## 7. Paridade de erros no JIT (corrigido)
+
+O C gerado usava `+ - * / %` diretos: overflow **envolvia** e divisão por zero **derrubava o
+processo**, enquanto o interpretador levantava erro. Corrigido com helpers que devolvem código
+de erro (`pifari_jit_add/sub/mul/div/mod/neg`), assinatura
+`long long pifari_jit(long long arg0, int *err)` e mensagem no ponto de chamada.
+
+| Programa | `OPT=0` | `OPT=2` |
+|---|---|---|
+| `9e18 + 9e18` em laço | erro: overflow de inteiro | erro: overflow de inteiro |
+| `total // 0` em laço | erro: divisão por zero | erro: divisão por zero |
+
+A mensagem do JIT nomeia a função (`overflow de inteiro em 'cresce'`) em vez da linha do
+operador; a categoria e o código de saída são os mesmos. É a diferença aceita no contrato:
+o mesmo erro, no mesmo ponto lógico.

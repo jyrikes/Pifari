@@ -16,6 +16,12 @@ skip=0
 ok=0
 for f in "$@"; do
   [ -f "$f" ] || continue
+  # lista de exclusão: programas com efeito observável dentro de >| (ordem de print
+  # depende do escalonamento) ou que imprimem tempo/thread id
+  if [ -f tests/equiv-skip.txt ] && grep -qx "$f" tests/equiv-skip.txt; then
+    skip=$((skip + 1))
+    continue
+  fi
   PIFARI_OPT=0 ./pifari "$f" >/tmp/pifari_eq_a1.txt 2>/dev/null
   e1=$?
   PIFARI_OPT=0 ./pifari "$f" >/tmp/pifari_eq_a2.txt 2>/dev/null

@@ -60,7 +60,7 @@ typedef struct FunctionDef {
  const Node *node;
  struct FunctionDef *next;
  void *jit_handle;
- long long (*jit_fn)(long long);
+ long long (*jit_fn)(long long, int*);
  int jit_requires_range;
  unsigned long long calls; unsigned char jit_attempted;
  unsigned long long time_ns;
@@ -1112,11 +1112,11 @@ static int jit_expr(JitBuffer*b,const Node*n,const Node*owner){
  if(!n)return 0;
  if(!strcmp(n->kind,"Integer")&&n->numeric_cached)return jit_append(b,"%lldLL",n->integer_cache);
  if(!strcmp(n->kind,"Name")&&n->local_slot>=0&&n->slot_owner==owner)return jit_append(b,"v[%d]",n->local_slot);
- if(!strcmp(n->kind,"Unary")&&n->count==1&&n->value&&!strcmp(n->value,"-"))return jit_append(b,"(-(")&&jit_expr(b,n->children[0],owner)&&jit_append(b,"))");
+ if(!strcmp(n->kind,"Unary")&&n->count==1&&n->value&&!strcmp(n->value,"-"))return jit_append(b,"pifari_jit_neg(")&&jit_expr(b,n->children[0],owner)&&jit_append(b,",err)");
  if(!strcmp(n->kind,"Binary")&&n->count==2){
-  const char*op=NULL;
-  switch(n->op_code){case PIFARI_OP_ADD:op="+";break;case PIFARI_OP_SUB:op="-";break;case PIFARI_OP_MUL:op="*";break;case PIFARI_OP_FLOORDIV:op="/";break;case PIFARI_OP_MOD:op="%";break;default:return 0;}
-  return jit_append(b,"(")&&jit_expr(b,n->children[0],owner)&&jit_append(b," %s ",op)&&jit_expr(b,n->children[1],owner)&&jit_append(b,")");
+  const char*fn=NULL;
+  switch(n->op_code){case PIFARI_OP_ADD:fn="pifari_jit_add";break;case PIFARI_OP_SUB:fn="pifari_jit_sub";break;case PIFARI_OP_MUL:fn="pifari_jit_mul";break;case PIFARI_OP_FLOORDIV:fn="pifari_jit_div";break;case PIFARI_OP_MOD:fn="pifari_jit_mod";break;default:return 0;}
+  return jit_append(b,"%s(",fn)&&jit_expr(b,n->children[0],owner)&&jit_append(b,",")&&jit_expr(b,n->children[1],owner)&&jit_append(b,",err)");
  }
  return 0;
 }
@@ -1161,8 +1161,8 @@ static int jit_stmt(JitBuffer*b,const Node*n,const Node*owner,int*has_return,int
  }
  if(!strcmp(n->kind,"Return")){
   if(n->count!=1)return 0;
-  if(!jit_append(b,"return "))return 0;
-  if(!jit_expr(b,n->children[0],owner)||!jit_append(b,";\n"))return 0;
+  if(!jit_append(b,"{ long long r_ = "))return 0;
+  if(!jit_expr(b,n->children[0],owner)||!jit_append(b,"; if(*err) return 0; return r_; }\n"))return 0;
   *has_return=1;return 1;
  }
  return 0;
@@ -1264,7 +1264,14 @@ static int jit_definitely_assigned(const Node *body,Binding *slots,size_t used){
  annotate_slot_nodes((Node*)body,slots,used,def);
  if(!jit_definitely_assigned(body,slots,used)){free(slots);return;}
  int has_return=0,requires_range=0;JitBuffer b={0};
- jit_append(&b,"#include <limits.h>\nlong long pifari_jit(long long arg0) { long long v[%zu]={0}; v[0]=arg0;\n",used?used:1);
+ jit_append(&b,"#include <limits.h>\n"
+  "static long long pifari_jit_add(long long a,long long b,int*e){long long r;if(__builtin_add_overflow(a,b,&r)){*e=1;return 0;}return r;}\n"
+  "static long long pifari_jit_sub(long long a,long long b,int*e){long long r;if(__builtin_sub_overflow(a,b,&r)){*e=1;return 0;}return r;}\n"
+  "static long long pifari_jit_mul(long long a,long long b,int*e){long long r;if(__builtin_mul_overflow(a,b,&r)){*e=1;return 0;}return r;}\n"
+  "static long long pifari_jit_div(long long a,long long b,int*e){if(!b){*e=2;return 0;}if(a==LLONG_MIN&&b==-1){*e=1;return 0;}return a/b;}\n"
+  "static long long pifari_jit_mod(long long a,long long b,int*e){if(!b){*e=2;return 0;}if(a==LLONG_MIN&&b==-1){*e=1;return 0;}return a%%b;}\n"
+  "static long long pifari_jit_neg(long long a,int*e){if(a==LLONG_MIN){*e=1;return 0;}return -a;}\n"
+  "long long pifari_jit(long long arg0, int *err) { long long v[%zu]={0}; v[0]=arg0;\n",used?used:1);
  if(!jit_stmt(&b,body,def,&has_return,&requires_range)||!has_return||b.failed){free(b.s);free(slots);return;}
  jit_append(&b,"return 0; }\n");
  if(b.failed){free(b.s);free(slots);return;}
@@ -1297,7 +1304,7 @@ static int jit_definitely_assigned(const Node *body,Binding *slots,size_t used){
   rmdir(temp_dir);h=dlopen(cachepath,RTLD_NOW|RTLD_LOCAL);
  }
  free(b.s);free(slots);if(!h)return;
- void*sym=dlsym(h,"pifari_jit");long long(*fn)(long long)=NULL;
+ void*sym=dlsym(h,"pifari_jit");long long(*fn)(long long,int*)=NULL;
  if(!sym||sizeof(fn)!=sizeof(sym)){dlclose(h);return;}
  memcpy(&fn,&sym,sizeof(fn));f->jit_handle=h;f->jit_fn=fn;f->jit_requires_range=requires_range;pifari_plan_log("funcao",f->name,PLAN_JIT,"atribuicao definida");
 }
@@ -1528,7 +1535,13 @@ static Value call_user_function_inner(const Node *call,FunctionDef *fn_def){
  if(fn_def->jit_fn&&ac==1&&values[0].type==V_INT){
   long long arg=values[0].as.i;
   if(fn_def->jit_requires_range&&(arg<0||arg>1000000)){free_value(values[0]);if(values!=stack_values)free(values);fail(call,"range aceita inteiro entre 0 e 1000000");return vnull();}
-  long long result=fn_def->jit_fn(arg);free_value(values[0]);if(values!=stack_values)free(values);
+  int jit_err=0;
+  long long result=fn_def->jit_fn(arg,&jit_err);
+  free_value(values[0]);if(values!=stack_values)free(values);
+  if(jit_err){
+   fail(call,jit_err==2?"divisão por zero em '%s'":"overflow de inteiro em '%s'",fn_def->name);
+   return vnull();
+  }
   return vint(result);
  }
  if(!fn_def->slots_ready&&!in_worker)prepare_function_slots(fn_def);
