@@ -9,6 +9,7 @@
 #include "devices.h"
 #include "gpu_client.h"
 #include "types.h"
+#include "effects.h"
 #include <errno.h>
 #include <math.h>
 #include <float.h>
@@ -61,6 +62,7 @@ typedef struct FunctionDef {
  int jit_requires_range;
  PifariExprGraph ir;
  int ir_ready;
+ unsigned effects; unsigned char effects_ready;
  PifariNativeKernel *native_kernel;
  PifariExprGraph indexed_ir;
  int indexed_ir_ready;
@@ -499,6 +501,17 @@ static Value eval_call(const Node*n){
   long long id=idv.as.i;free_value(idv);
   if(pifari_task_cancel(id)<0){fail(n,"tarefa inválida");return vnull();}
   return vnull();
+ }
+ if(!strcmp(name,"efeitos")){
+  if(count!=1){fail(n,"efeitos espera o nome da função");return vnull();}
+  Value nv=eval(args->children[0]);
+  if(runtime_failed){free_value(nv);return vnull();}
+  if(nv.type!=V_STRING){free_value(nv);fail(n,"efeitos espera texto com o nome da função");return vnull();}
+  FunctionDef*fn=NULL;
+  for(FunctionDef*f=functions;f;f=f->next)if(!strcmp(f->name,nv.as.s)){fn=f;break;}
+  PifariEffect effect=fn?(fn->effects_ready?fn->effects:(PifariEffect)EFFECT_IO):pifari_builtin_effect(nv.as.s);
+  free_value(nv);
+  return vstr(pifari_effect_name(effect));
  }
  if(!strcmp(name,"dispositivos")){
   if(count!=0){fail(n,"dispositivos não espera argumentos");return vnull();}
@@ -1870,7 +1883,7 @@ static int try_native_map_flow(const Node *target, const Node *variable,
  FunctionDef *function=NULL;
  for(FunctionDef *f=functions;f;f=f->next)
   if(!strcmp(f->name,target->value?target->value:"")){function=f;break;}
- if(!function||!function->ir_ready||
+ if(!function||!function->ir_ready||!function->effects_ready||function->effects!=EFFECT_PURE||
     (sequence.type!=V_LIST&&sequence.type!=V_RANGE&&sequence.type!=V_F64_ARRAY)) return 0;
 
  size_t length=sequence.type==V_LIST?sequence.as.list.count:
@@ -2369,6 +2382,24 @@ static int try_assign_list_append_in_place(const Node *n){
  set_node_binding(n,n->value,out,n);
  return 1;
 }
+/* Efeitos de uma expressão/corpo (spec §384). Usado para decidir se um plano
+   rápido é seguro: só função pura pode virar kernel nativo. */
+static unsigned compute_effects(const Node *n, int depth) {
+ if (!n || depth > 32) return EFFECT_IO;
+ unsigned total = 0;
+ if (!strcmp(n->kind, "Call")) {
+  const char *name = n->value ? n->value : "";
+  FunctionDef *fn = NULL;
+  for (FunctionDef *f = functions; f; f = f->next)
+   if (!strcmp(f->name, name)) { fn = f; break; }
+  if (fn) total |= fn->effects_ready ? fn->effects : (unsigned)EFFECT_IO;
+  else total |= (unsigned)pifari_builtin_effect(name);
+ }
+ if (!strcmp(n->kind, "Spawn") || !strcmp(n->kind, "Await")) total |= EFFECT_IO;
+ if (!strcmp(n->kind, "Function") || !strcmp(n->kind, "FunctionExpr")) return total;
+ for (size_t i = 0; i < n->count; i++) total |= compute_effects(n->children[i], depth + 1);
+ return total;
+}
 static void exec_node(const Node*n){
  if(!n||runtime_failed)return;
  if(!strcmp(n->kind,"Program")||!strcmp(n->kind,"Block")||!strcmp(n->kind,"Statements")){exec_block(n);return;}
@@ -2453,6 +2484,7 @@ static void exec_node(const Node*n){
   if(!f){fail(n,"memória insuficiente ao registrar função");return;}
   f->name=n->value;f->node=n;f->next=functions;functions=f;
   prepare_function_slots(f);
+  f->effects=compute_effects(n->count>1?n->children[1]:NULL,0);f->effects_ready=1;
   char ir_error[160];
   if(pifari_ast_function_to_ir(n,&f->ir,ir_error,sizeof(ir_error))==0)
    f->ir_ready=1;

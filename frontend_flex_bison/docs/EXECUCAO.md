@@ -5,52 +5,50 @@ e `git status --short`. Não reler `runtime.c` inteiro (~2600 linhas).
 
 ## Estado
 
-- **Etapa atual:** F2 — efeitos e pureza (F0 e F1 concluídas)
-- **Último teste verde:** `make test-core` exit 0 e `make check-core` exit 0 (36 programas)
-- **Plano:** F0–F5; semântica em `docs/SPEC_SEMANTICA.md` (§11 cobre o `--check`)
+- **Etapa atual:** F3 — planos de execução e IR estendido (F0, F1 e F2 concluídas)
+- **Último teste verde:** `make test-core` exit 0 (37 programas) e `make check-core` exit 0
+- **Plano:** F0–F5; semântica em `docs/SPEC_SEMANTICA.md` (§11 `--check`, §12 efeitos)
 
 ## Concluído
 
-- **F0** — `SPEC_SEMANTICA.md`; JIT com atribuição definida (corrigiu `acc = acc + x` que
-  devolvia 5 em vez de 105); overflow detectável nos 3 caminhos; `//` e `%` truncando para
-  zero; diretivas não implementadas falham; `dict` fora do léxico.
-- **F1a** — `backend/types.[ch]`; `=:` verificado em execução com promoção `int -> float`;
-  tipo desconhecido falha; `Binding.kind` pronto para a F3.
-- **F1b** — `param: IDENTIFIER COLON type_expr` e `function f(...) -> tipo`; checagem de
-  argumento e de retorno nomeando parâmetro/função; JIT desligado para função anotada.
-- **F1c** — `backend/typecheck.[ch]` + `pifari --check`: nomes globais não declarados,
-  `=:` duplicado, `break`/`continue`, aridade de chamada, tipo desconhecido, retorno literal
-  incompatível, diretivas e `class`. Dentro de função, nome desconhecido é **aviso**
-  (ligação tardia de global) para não gerar falso positivo. `make check-core` cobre os 36
-  programas do `test-core`.
+- **F0** — semântica declarada; JIT com atribuição definida (corrigiu resultado errado em
+  `acc = acc + x`); overflow detectável nos 3 caminhos; `//` e `%` truncando; diretivas
+  não implementadas falham; `dict` fora do léxico.
+- **F1a/b/c** — `types.[ch]` com promoção `int→float`; `=:` verificado; parâmetros e retorno
+  tipados (`function f(a: int) -> float`); `typecheck.[ch]` + `pifari --check` (nomes,
+  duplicata, `break`, aridade, tipo desconhecido, diretivas) e `make check-core`.
+- **F2** — `backend/effects.[ch]`: builtins classificados em puro/leitura/escrita/io;
+  `FunctionDef.effects` calculado no registro com análise transitiva (chamada a função não
+  analisada = io); builtin `efeitos("nome")`; `try_native_map_flow` agora exige
+  `effects == EFFECT_PURE`. `examples/efeitos.pif` cobre os quatro rótulos.
 
-## Próximos 3 passos (F2)
+## Próximos 3 passos (F3)
 
-1. Tabela de efeitos dos builtins (puro / leitura / escrita / I/O) em `backend/effects.[ch]`.
-2. Análise por função: pura quando só lê parâmetros/locais e chama apenas puros; gravar
-   `fn->effects` no `FunctionDef`.
-3. Usar a pureza: (a) permitir kernel nativo/paralelização automática só para puras;
-   (b) recusar especialização quando houver `compartilhado`/`print`; (c) expor em
-   `--check` como aviso quando um fluxo paralelo chama função impura.
+1. `backend/plan.[ch]`: enum `PLAN_WALK|BYTECODE|JIT|NATIVE|GPU`, guardas por tipo/pureza,
+   escolha na entrada da função/laço e deopt para WALK quando a guarda falha.
+2. IR estendido em `ast_ir.[ch]`: laço `for i in range(n)` puro, redução (soma) e `A[i]`
+   usado em laço — hoje o IR cobre expressão unária e `(A,i)`.
+3. `PIFARI_OPT=0|1|2` e `PIFARI_OPT_DEBUG=1`: comparar saídas em 0 e 2 sobre `test-core`
+   (contrato do §8) e publicar tempos em `docs/OTIMIZACOES.md`.
 
 ## Observações
 
 - `examples/teste_cliente_servidor_mcp_pifari.pif` é **flaky** (timeout do mock MCP);
-  passou 3/3 na repetição. F5 deve dar retry/timeout maior.
-- `--check` ainda reprova 4 exemplos por motivo conhecido: `condicao_implicita.pif` e
-  `runtime_basico.pif` (sintaxe inválida de propósito), `diretivas.pif` (demonstra diretivas)
-  e `fluxo.pif` (rascunho antigo). Nenhum está no `test-core`.
-- Avisos de ligação tardia (`pesos` em `mlp_xor*.pif`) são esperados e não bloqueiam.
+  F5 deve dar retry/timeout maior.
+- `--check` reprova 4 exemplos por motivo conhecido (fora do `test-core`): sintaxe inválida
+  proposital (`condicao_implicita`, `runtime_basico`), `diretivas` e rascunho `fluxo`.
+- Avisos de ligação tardia (`pesos` em `mlp_xor*.pif`) são esperados.
 
 ## Decisões (não reabrir)
 
 - Overflow = erro; `->` = tipo de retorno; lista = valor; classes/closures/módulos/GC fora.
-- Em função, nome desconhecido é aviso, não erro (Pifari resolve global na chamada).
-- `Param` é nó com `value` = nome e filho `Type`; `Function` com 3 filhos quando há retorno.
+- Efeito não altera execução: só autoriza/veta especialização.
+- Função anotada não vai para o JIT (o C gerado não carrega tipos).
+- `Param` = nó com `value`=nome + filho `Type`; `Function` tem 3 filhos quando há retorno.
 
 ## Arquivos tocados
 
-- `backend/types.[ch]`, `backend/typecheck.[ch]` (novos), `backend/runtime.c`
-- `frontend/parser.y`, `frontend/lexer.l`, `Makefile` (`check-core`)
+- `backend/types.[ch]`, `backend/typecheck.[ch]`, `backend/effects.[ch]` (novos)
+- `backend/runtime.c`, `frontend/parser.y`, `frontend/lexer.l`, `Makefile`
 - `docs/SPEC_SEMANTICA.md`, `docs/STATUS_REAL.md`, `docs/EXECUCAO.md`
-- `examples/tipos.pif` (novo), `examples/test.pif` (correção de `float("1.75")`)
+- `examples/tipos.pif`, `examples/efeitos.pif` (novos), `examples/test.pif`

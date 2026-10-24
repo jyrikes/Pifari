@@ -138,3 +138,28 @@ função pode referenciar `pesos` declarado depois dela no arquivo (é o caso de
 
 `make check-core` roda o `--check` em todos os 36 programas do `test-core`; hoje passa
 com zero erros (só os avisos de ligação tardia).
+
+---
+
+## 12. Efeitos e especialização (F2)
+
+Toda função recebe uma classificação estática, calculada no registro:
+
+| Efeito | Exemplos | Pode virar kernel nativo? |
+|---|---|---|
+| `puro` | `len`, `sort`, `matmul`, `exp`, função só de aritmética | **sim** |
+| `leitura` | `agora_ms`, `thread_id`, `dispositivos`, `ler` | não (resultado depende do ambiente) |
+| `escrita` | `array_set`, `escrever`, `incrementar`, `compartilhado` | não |
+| `io` | `print`, `sleep_ms`, MCP, tarefas, `ctx_*`, `telemetry_*` | não |
+
+Regras:
+- função é `puro` quando só chama puros e não usa `spawn`/`await`;
+- chamada a função ainda não analisada (recursão ou definida depois) conta como `io`
+  — conservador, conforme §384 ("quando o runtime não consegue provar segurança, execute
+  sequencialmente");
+- builtin desconhecido = `io`;
+- a classificação é consultável em Pifari por `efeitos("nome")`, que devolve o rótulo.
+
+Efeito **não** muda a ordem de execução nem o resultado: ele só autoriza ou veta
+especialização. Um fluxo paralelo sobre função impura continua rodando em paralelo
+(a semântica manda), apenas não é promovido a kernel nativo.

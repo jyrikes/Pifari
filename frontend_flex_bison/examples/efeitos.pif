@@ -1,0 +1,28 @@
+@ Classificação de efeitos (spec v3 §384, etapa F2).
+@ Só função "puro" pode ser especializada em kernel nativo; "leitura" já depende
+@ do ambiente e "io"/"escrita" nunca são movidas nem paralelizadas pelo otimizador.
+
+function pura(x)
+  return x * 2 + 1
+
+function le_relogio()
+  return agora_ms()
+
+function escreve(alvo)
+  array_set(alvo, 0, 1)
+  return 0
+
+function fala(x)
+  print("lado", x)
+  return x
+
+function chama_impura(x)
+  return fala(x)
+
+print("pura:", efeitos("pura"))
+print("le_relogio:", efeitos("le_relogio"))
+print("escreve:", efeitos("escreve"))
+print("fala:", efeitos("fala"))
+print("chama_impura:", efeitos("chama_impura"))
+print("builtin print:", efeitos("print"))
+print("builtin sort:", efeitos("sort"))
