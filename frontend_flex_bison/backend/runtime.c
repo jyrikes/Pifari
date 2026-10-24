@@ -18,6 +18,10 @@
 #include <stddef.h>
 #include <pthread.h>
 #include <time.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
 
 typedef enum { V_NULL, V_INT, V_FLOAT, V_BOOL, V_STRING, V_LIST, V_RANGE, V_F64_ARRAY } ValueType;
 typedef struct Value Value;
@@ -79,6 +83,14 @@ static _Thread_local Value return_value;
 static _Thread_local int in_worker;
 static _Thread_local int cancel_requested;
 static _Thread_local char error_message[256];
+/* Modo de distribuição dos fluxos (runtime, não sintaxe — SPEC §7.4).
+   0 = threads; 1 = processos. Só pode virar processos antes de o pool de
+   threads existir, porque fork() com threads vivas herda locks em uso. */
+static int execution_processes;
+static size_t execution_workers;
+static int thread_pool_active;
+#define PIFARI_PROCESS_TIMEOUT_MS 60000
+#define PIFARI_MAX_PROCESSES 64
 /* Optional counters: disabled by default so normal execution pays only one branch. */
 static int profiling_enabled;
 static unsigned long long profile_eval_nodes, profile_binding_lookups, profile_value_copies, profile_bytecode_ops;
@@ -104,6 +116,16 @@ static Value vbool(int n){ Value v={.type=V_BOOL};v.as.b=!!n;return v; }
 static Value vstr(const char*s){ Value v={.type=V_STRING};v.as.s=dup_string(s?s:"");return v; }
 static long long monotonic_ms(void){struct timespec ts;if(clock_gettime(CLOCK_MONOTONIC,&ts)!=0)return 0;return (long long)ts.tv_sec*1000LL+ts.tv_nsec/1000000LL;}
 static long long monotonic_ns(void){struct timespec ts;if(clock_gettime(CLOCK_MONOTONIC,&ts)!=0)return 0;return (long long)ts.tv_sec*1000000000LL+ts.tv_nsec;}
+/* Conta threads vivas: fork() com mais de uma thread pode herdar mutex preso
+   por outra thread, então o modo processos exige processo single-thread. */
+static int pifari_live_threads(void){
+ FILE*f=fopen("/proc/self/status","r");
+ if(!f)return 1;
+ char line[256];int n=1;
+ while(fgets(line,sizeof(line),f))if(!strncmp(line,"Threads:",8)){n=atoi(line+8);break;}
+ fclose(f);
+ return n;
+}
 static void fail(const Node*n,const char*fmt,...){
  if(runtime_failed)return;
  runtime_failed=1;
@@ -390,6 +412,24 @@ static Value eval_call(const Node*n){
  const char*name=n->value?n->value:"";
  for(FunctionDef *f=functions;f;f=f->next)if(!strcmp(f->name,name))return call_user_function(n,f);
  const Node*args=n->count?n->children[0]:NULL;size_t count=args?args->count:0;
+ if(!strcmp(name,"modo_processos")){
+  if(count!=1){fail(n,"modo_processos espera a quantidade de processos");return vnull();}
+  Value wv=eval(args->children[0]);if(runtime_failed){free_value(wv);return vnull();}
+  if(wv.type!=V_INT||wv.as.i<1||wv.as.i>PIFARI_MAX_PROCESSES){
+   free_value(wv);fail(n,"modo_processos espera inteiro entre 1 e %d",PIFARI_MAX_PROCESSES);return vnull();
+  }
+  long long nproc=wv.as.i;free_value(wv);
+  int threads=pifari_live_threads();
+  if(threads>1||thread_pool_active){
+   fail(n,"modo_processos exige ser chamado antes de o runtime criar threads (há %d ativa(s)); fork com threads herdaria locks em uso",threads);
+   return vnull();
+  }
+  execution_processes=1;execution_workers=(size_t)nproc;return vint(nproc);
+ }
+ if(!strcmp(name,"modo_threads")){
+  if(count!=0){fail(n,"modo_threads não espera argumentos");return vnull();}
+  execution_processes=0;execution_workers=0;return vnull();
+ }
  if(!strcmp(name,"array_set")){
   if(count!=3){fail(n,"array_set espera array, índice e valor");return vnull();}
   if(!strcmp(args->children[0]->kind,"Name")){
@@ -1408,6 +1448,7 @@ static void pool_initialize(void){
  if(!worker_pool.initialized){
   worker_pool.initialized=1;
   for(size_t i=0;i<PIFARI_POOL_SIZE;i++)if(pthread_create(&worker_pool.threads[worker_pool.started],NULL,persistent_worker,(void*)(uintptr_t)worker_pool.started)==0)worker_pool.started++;
+  thread_pool_active=1;
  }
  pthread_mutex_unlock(&worker_pool.mutex);
 }
@@ -1500,6 +1541,236 @@ static int try_native_map_flow(const Node *target, const Node *variable,
  return 1;
 }
 
+/* ===== Serialização de Value para resultados entre processos =====
+   Só o resultado atravessa o pipe: os filhos são fork() do pai, então os itens
+   já estão na memória deles por copy-on-write. */
+typedef struct { unsigned char *data; size_t len, cap; int failed; } ByteBuf;
+static void bb_reserve(ByteBuf*b,size_t extra){
+ if(b->failed)return;
+ if(b->len+extra<=b->cap)return;
+ size_t cap=b->cap?b->cap:256;
+ while(cap<b->len+extra)cap*=2;
+ unsigned char*p=realloc(b->data,cap);
+ if(!p){b->failed=1;return;}
+ b->data=p;b->cap=cap;
+}
+static void bb_bytes(ByteBuf*b,const void*p,size_t n){if(b->failed)return;bb_reserve(b,n);if(b->failed)return;if(n)memcpy(b->data+b->len,p,n);b->len+=n;}
+static void bb_u8(ByteBuf*b,unsigned v){unsigned char c=(unsigned char)v;bb_bytes(b,&c,1);}
+static void bb_u32(ByteBuf*b,uint32_t v){unsigned char c[4]={(unsigned char)(v&255),(unsigned char)((v>>8)&255),(unsigned char)((v>>16)&255),(unsigned char)((v>>24)&255)};bb_bytes(b,c,4);}
+static void bb_i64(ByteBuf*b,long long v){unsigned long long u=(unsigned long long)v;unsigned char c[8];for(int i=0;i<8;i++)c[i]=(unsigned char)(u>>(8*i));bb_bytes(b,c,8);}
+static void bb_f64(ByteBuf*b,double d){unsigned long long u;memcpy(&u,&d,8);unsigned char c[8];for(int i=0;i<8;i++)c[i]=(unsigned char)(u>>(8*i));bb_bytes(b,c,8);}
+static void encode_value(ByteBuf*b,Value v,int depth){
+ if(b->failed)return;
+ if(depth>32){b->failed=1;return;}
+ switch(v.type){
+  case V_NULL: bb_u8(b,0); break;
+  case V_INT: bb_u8(b,1); bb_i64(b,v.as.i); break;
+  case V_FLOAT: bb_u8(b,2); bb_f64(b,v.as.f); break;
+  case V_BOOL: bb_u8(b,3); bb_u8(b,(unsigned)(v.as.b?1:0)); break;
+  case V_STRING: {
+   size_t n=strlen(v.as.s?v.as.s:"");
+   if(n>1048576){b->failed=1;return;}
+   bb_u8(b,4);bb_u32(b,(uint32_t)n);bb_bytes(b,v.as.s,n);break;
+  }
+  case V_LIST: {
+   if(v.as.list.count>1000000){b->failed=1;return;}
+   bb_u8(b,5);bb_u32(b,(uint32_t)v.as.list.count);
+   for(size_t i=0;i<v.as.list.count;i++)encode_value(b,v.as.list.items[i],depth+1);
+   break;
+  }
+  case V_F64_ARRAY: {
+   size_t n=v.as.array?v.as.array->length:0;
+   if(n>10000000){b->failed=1;return;}
+   bb_u8(b,6);bb_u32(b,(uint32_t)n);
+   for(size_t i=0;i<n;i++)bb_f64(b,v.as.array->data[i]);
+   break;
+  }
+  case V_RANGE: bb_u8(b,7); bb_i64(b,v.as.range_end); break;
+  default: b->failed=1; break;
+ }
+}
+typedef struct { const unsigned char *data; size_t len, pos; int failed; } ByteCursor;
+static unsigned char rd_u8(ByteCursor*c){if(c->failed||c->pos>=c->len){c->failed=1;return 0;}return c->data[c->pos++];}
+static uint32_t rd_u32(ByteCursor*c){
+ if(c->failed||c->pos+4>c->len){c->failed=1;return 0;}
+ uint32_t v=0;for(int i=0;i<4;i++)v|=(uint32_t)c->data[c->pos+i]<<(8*i);
+ c->pos+=4;return v;
+}
+static unsigned long long rd_u64(ByteCursor*c){
+ if(c->failed||c->pos+8>c->len){c->failed=1;return 0;}
+ unsigned long long v=0;for(int i=0;i<8;i++)v|=(unsigned long long)c->data[c->pos+i]<<(8*i);
+ c->pos+=8;return v;
+}
+static Value decode_value(ByteCursor*c,int depth){
+ if(c->failed||depth>32){c->failed=1;return vnull();}
+ unsigned char tag=rd_u8(c);
+ switch(tag){
+  case 0: return vnull();
+  case 1: return vint((long long)rd_u64(c));
+  case 2: {unsigned long long u=rd_u64(c);double d;memcpy(&d,&u,8);return vfloat(d);}
+  case 3: return vbool(rd_u8(c));
+  case 4: {
+   uint32_t n=rd_u32(c);
+   if(c->failed||n>1048576||c->pos+n>c->len){c->failed=1;return vnull();}
+   char*s=malloc((size_t)n+1);
+   if(!s){c->failed=1;return vnull();}
+   memcpy(s,c->data+c->pos,n);s[n]=0;c->pos+=n;
+   Value out={.type=V_STRING};out.as.s=s;return out;
+  }
+  case 5: {
+   uint32_t n=rd_u32(c);
+   if(c->failed||n>1000000){c->failed=1;return vnull();}
+   Value lst=list_new(n);
+   if(lst.type!=V_LIST){c->failed=1;return vnull();}
+   for(uint32_t i=0;i<n;i++){lst.as.list.items[i]=decode_value(c,depth+1);if(c->failed){free_value(lst);return vnull();}}
+   return lst;
+  }
+  case 6: {
+   uint32_t n=rd_u32(c);
+   if(c->failed||n>10000000||c->pos+(size_t)n*8>c->len){c->failed=1;return vnull();}
+   Value arr=f64_array_new(n);
+   if(arr.type!=V_F64_ARRAY){c->failed=1;return vnull();}
+   for(uint32_t i=0;i<n;i++){unsigned long long u=rd_u64(c);memcpy(&arr.as.array->data[i],&u,8);}
+   return arr;
+  }
+  case 7: return vint((long long)rd_u64(c));
+  default: c->failed=1;return vnull();
+ }
+}
+static int pifari_write_all(int fd,const void*buf,size_t len){
+ const unsigned char*p=(const unsigned char*)buf;
+ while(len){
+  ssize_t w=write(fd,p,len);
+  if(w<0){if(errno==EINTR)continue;return -1;}
+  if(w==0)return -1;
+  p+=w;len-=(size_t)w;
+ }
+ return 0;
+}
+/* ===== Distribuição em processos =====
+   Um contador atômico em memória compartilhada distribui os índices; cada filho
+   devolve [índice][tamanho][status+payload] pelo seu pipe. O pai nunca escreve
+   dados: zero risco de deadlock por pipe cheio no sentido de ida. */
+static void process_map(ParallelWork*w,size_t workers){
+ if(in_worker){run_work_serial(w);return;}
+ if(workers<1)workers=1;
+ if(workers>w->count)workers=w->count;
+ if(!workers)return;
+ size_t *shared=mmap(NULL,sizeof(size_t),PROT_READ|PROT_WRITE,MAP_SHARED|MAP_ANONYMOUS,-1,0);
+ if(shared==MAP_FAILED){parallel_process_work(w);return;}
+ *shared=0;
+ int (*fds)[2]=calloc(workers,sizeof(*fds));
+ pid_t *pids=calloc(workers,sizeof(pid_t));
+ unsigned char *delivered=calloc(w->count?w->count:1,1);
+ if(!fds||!pids||!delivered){
+  free(fds);free(pids);free(delivered);munmap(shared,sizeof(size_t));parallel_process_work(w);return;
+ }
+ signal(SIGPIPE,SIG_IGN);
+ size_t started=0;
+ for(size_t i=0;i<workers;i++){
+  if(pipe(fds[i])!=0)break;
+  pid_t pid=fork();
+  if(pid<0){close(fds[i][0]);close(fds[i][1]);break;}
+  if(pid==0){
+   close(fds[i][0]);
+   for(size_t k=0;k<i;k++){close(fds[k][0]);close(fds[k][1]);}
+   int outfd=fds[i][1];
+   Binding iteration_slot={.name=w->variable->value,.value={.type=V_NULL}};
+   LocalFrame frame={.slots=&iteration_slot,.count=1};
+   frame.buckets[binding_hash(iteration_slot.name)&255u]=&iteration_slot;
+   frame.parent=local_frame;local_frame=&frame;
+   for(;;){
+    size_t idx=__atomic_fetch_add(shared,1,__ATOMIC_SEQ_CST);
+    if(idx>=w->count)break;
+    free_value(iteration_slot.value);iteration_slot.value=copy_value(w->items[idx]);
+    runtime_failed=0;error_message[0]=0;
+    Value res=eval(w->target);
+    ByteBuf b={0};
+    if(runtime_failed){
+     size_t m=strlen(error_message);
+     bb_u8(&b,1);bb_u32(&b,(uint32_t)m);bb_bytes(&b,error_message,m);
+    }else{
+     bb_u8(&b,0);encode_value(&b,res,0);
+     if(b.failed){
+      free(b.data);b.data=NULL;b.len=0;b.cap=0;b.failed=0;
+      const char*msg="resultado não serializável entre processos";
+      bb_u8(&b,1);bb_u32(&b,(uint32_t)strlen(msg));bb_bytes(&b,msg,strlen(msg));
+     }
+    }
+    free_value(res);
+    uint32_t head[2]={(uint32_t)idx,(uint32_t)b.len};
+    if(pifari_write_all(outfd,head,8)!=0||pifari_write_all(outfd,b.data,b.len)!=0){free(b.data);_exit(3);}
+    free(b.data);
+   }
+   close(outfd);_exit(0);
+  }
+  pids[started++]=pid;
+ }
+ for(size_t k=0;k<started;k++)close(fds[k][1]);
+ if(!started){
+  free(fds);free(pids);free(delivered);munmap(shared,sizeof(size_t));parallel_process_work(w);return;
+ }
+ struct pollfd *pfds=calloc(started,sizeof(*pfds));
+ unsigned char **rbuf=calloc(started,sizeof(*rbuf));
+ size_t *rlen=calloc(started,sizeof(size_t)),*rcap=calloc(started,sizeof(size_t));
+ for(size_t k=0;k<started;k++){pfds[k].fd=fds[k][0];pfds[k].events=POLLIN;}
+ long long deadline=monotonic_ms()+PIFARI_PROCESS_TIMEOUT_MS;
+ size_t alive=started;
+ while(alive>0){
+  long long remaining=deadline-monotonic_ms();
+  if(remaining<=0){for(size_t k=0;k<started;k++)if(pfds[k].fd>=0)kill(pids[k],SIGKILL);break;}
+  int ready=poll(pfds,started,(int)(remaining>1000?1000:remaining));
+  if(ready<0){if(errno==EINTR)continue;break;}
+  if(ready==0)continue;
+  for(size_t k=0;k<started;k++){
+   if(pfds[k].fd<0||!(pfds[k].revents&(POLLIN|POLLHUP|POLLERR)))continue;
+   if(rlen[k]+4096>rcap[k]){
+    size_t cap=rcap[k]?rcap[k]*2:8192;
+    while(cap<rlen[k]+4096)cap*=2;
+    unsigned char*p=realloc(rbuf[k],cap);
+    if(!p){pfds[k].fd=-1;alive--;continue;}
+    rbuf[k]=p;rcap[k]=cap;
+   }
+   ssize_t got=read(pfds[k].fd,rbuf[k]+rlen[k],rcap[k]-rlen[k]);
+   if(got<=0){if(got<0&&errno==EINTR)continue;pfds[k].fd=-1;alive--;continue;}
+   rlen[k]+=(size_t)got;
+   size_t pos=0;
+   while(rlen[k]-pos>=8){
+    uint32_t idx=0,len=0;
+    for(int i=0;i<4;i++)idx|=(uint32_t)rbuf[k][pos+i]<<(8*i);
+    for(int i=0;i<4;i++)len|=(uint32_t)rbuf[k][pos+4+i]<<(8*i);
+    if(rlen[k]-pos-8<len)break;
+    const unsigned char*payload=rbuf[k]+pos+8;
+    if(idx<w->count&&!delivered[idx]){
+     delivered[idx]=1;
+     if(len>=1&&payload[0]==0){
+      ByteCursor c={payload+1,(size_t)len-1,0,0};
+      Value v=decode_value(&c,0);
+      if(c.failed){free_value(v);w->errors[idx]=dup_string("resultado inválido devolvido pelo processo");}
+      else w->results[idx]=v;
+     }else{
+      size_t m=(len>=5)?(size_t)len-5:0;
+      if(m>255)m=255;
+      char msg[256];memcpy(msg,payload+5,m);msg[m]=0;
+      w->errors[idx]=dup_string(m?msg:"falha no processo filho");
+     }
+    }
+    pos+=8+len;
+   }
+   if(pos){memmove(rbuf[k],rbuf[k]+pos,rlen[k]-pos);rlen[k]-=pos;}
+  }
+ }
+ for(size_t k=0;k<started;k++){
+  if(pfds[k].fd>=0){close(pfds[k].fd);pfds[k].fd=-1;}
+  int status=0;
+  while(waitpid(pids[k],&status,0)<0&&errno==EINTR){}
+  free(rbuf[k]);
+ }
+ for(size_t i=0;i<w->count;i++)if(!delivered[i]&&!w->errors[i])
+  w->errors[i]=dup_string("processo não entregou resultado");
+ free(pfds);free(rbuf);free(rlen);free(rcap);free(delivered);free(fds);free(pids);
+ munmap(shared,sizeof(size_t));
+}
 static Value eval_parallel_flow(const Node *n){
  const Node *source=n->count>0?n->children[0]:NULL,*target=n->count>1?n->children[1]:NULL;
  if(!source||strcmp(source->kind,"Flow")||strcmp(source->value,">|")||source->count<2||!target){
@@ -1509,7 +1780,9 @@ static Value eval_parallel_flow(const Node *n){
  if(strcmp(variable->kind,"Name")){fail(n,"o nome após >| deve ser um identificador");return vnull();}
  Value seq=eval(iterable);if(runtime_failed){free_value(seq);return vnull();}
  Value fused_result=vnull();
- int fused_status=try_native_map_flow(target,variable,seq,&fused_result);
+ /* O caminho nativo fundido usa threads; em modo processos ele é ignorado para
+    não misturar os dois modelos de execução no mesmo fluxo. */
+ int fused_status=execution_processes?0:try_native_map_flow(target,variable,seq,&fused_result);
  if(fused_status!=0){free_value(seq);return fused_status>0?fused_result:vnull();}
  size_t count=seq.type==V_LIST?seq.as.list.count:seq.type==V_F64_ARRAY?seq.as.array->length:((seq.type==V_STRING)?strlen(seq.as.s):((seq.type==V_RANGE)?(size_t)seq.as.range_end:0));
  if(seq.type!=V_LIST&&seq.type!=V_F64_ARRAY&&seq.type!=V_STRING&&seq.type!=V_RANGE){fail(n,"o lado esquerdo de >| deve ser uma lista, array tipado, texto ou range");free_value(seq);return vnull();}
@@ -1527,7 +1800,7 @@ static Value eval_parallel_flow(const Node *n){
  if(out.type!=V_LIST){if(seq.type!=V_LIST){for(size_t i=0;i<count;i++)free_value(items[i]);free(items);}free_value(seq);fail(n,"memória insuficiente para resultados paralelos");return vnull();}
  char **errors=calloc(count?count:1,sizeof(char*));
  ParallelWork w={.next=0,.count=count,.items=items,.results=out.as.list.items,.errors=errors,.target=target,.variable=variable,.at=n,.base=globals};
- if(count)pool_run(&w);
+ if(count){if(execution_processes)process_map(&w,execution_workers);else pool_run(&w);}
  if(seq.type!=V_LIST){for(size_t i=0;i<count;i++)free_value(items[i]);free(items);}
  free_value(seq);
  size_t first_bad=0;char *first_msg=NULL;

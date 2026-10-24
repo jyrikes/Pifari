@@ -1,0 +1,17 @@
+@ Conformidade do modo processos (docs/SPEC_CONCORRENCIA.md §2.3 e C7)
+@ O mesmo fluxo deve dar o mesmo resultado em processos e em threads.
+
+modo_processos(2)
+
+function dobro(x)
+  return x * 2
+
+xs = range(50)
+xs >| x >| dobro(x) |< por_processo
+print("processos:", len(por_processo), por_processo[0], por_processo[49])
+
+modo_threads()
+
+ys = [1, 2, 3]
+ys >| y >| dobro(y) |< por_thread
+print("threads:", por_thread)
