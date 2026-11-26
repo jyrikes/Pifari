@@ -1,4 +1,4 @@
-This is pdfTeX, Version 3.141592653-2.6-1.40.28 (MiKTeX 25.12) (preloaded format=pdflatex 2026.6.24)  18 OCT 2026 14:12
+This is pdfTeX, Version 3.141592653-2.6-1.40.28 (MiKTeX 25.12) (preloaded format=pdflatex 2026.6.24)  24 OCT 2026 08:19
 entering extended mode
  restricted \write18 enabled.
  %&-line parsing enabled.
@@ -600,7 +600,7 @@ Package rerunfilecheck Info: File `Definicao_Pifari_v3.out' has not changed.
  ) 
 Here is how much of TeX's memory you used:
  13191 strings out of 467871
- 204578 string characters out of 5413984
+ 204641 string characters out of 5413984
  922116 words of memory out of 5000000
  41661 multiletter control sequences out of 15000+600000
  639599 words of font info for 65 fonts, out of 8000000 for 9000
@@ -621,7 +621,7 @@ inne\AppData\Local\MiKTeX\fonts/pk/ljfour/jknappen/ec/dpi600\ecbx1095.pk> <C:\U
 sers\Yngrid Kalinne\AppData\Local\MiKTeX\fonts/pk/ljfour/jknappen/ec/dpi600\ecr
 m1440.pk> <C:\Users\Yngrid Kalinne\AppData\Local\MiKTeX\fonts/pk/ljfour/jknappe
 n/ec/dpi600\ecrm2074.pk>
-Output written on Definicao_Pifari_v3.pdf (23 pages, 312857 bytes).
+Output written on Definicao_Pifari_v3.pdf (23 pages, 313088 bytes).
 PDF statistics:
  1270 PDF objects out of 1440 (max. 8388607)
  278 named destinations out of 1000 (max. 500000)

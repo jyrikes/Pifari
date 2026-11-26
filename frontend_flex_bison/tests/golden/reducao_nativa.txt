@@ -1,0 +1,8 @@
+soma_ate(10): 45
+soma_ate(200000): 19999900000
+soma_quadrados(1000): 332833500
+saldo(10): 10
+fatorial(10): 3628800
+media(4): 6
+repeticao: 499500
+repeticao: 499500

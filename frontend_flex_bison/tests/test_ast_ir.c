@@ -1,4 +1,4 @@
-#include "../backend/ast_ir.h"
+#include "../backend/optimization/ast_ir.h"
 #include "../backend/numeric_buffer.h"
 #include <assert.h>
 #include <stdint.h>

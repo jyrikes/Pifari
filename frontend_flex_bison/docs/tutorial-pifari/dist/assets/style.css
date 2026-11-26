@@ -1,0 +1,392 @@
+* {
+  box-sizing: border-box;
+}
+:root {
+  --paper: #f4f2eb;
+  --ink: #213d38;
+  --green: #255e4d;
+  --muted: #718077;
+  --line: #d7ddd2;
+}
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font:
+    16px/1.7 system-ui,
+    sans-serif;
+}
+button,
+input,
+a {
+  font: inherit;
+}
+a {
+  color: inherit;
+}
+button {
+  cursor: pointer;
+}
+header {
+  height: 86px;
+  padding: 0 4%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--line);
+  background: var(--paper);
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  text-decoration: none;
+  font-size: 26px;
+  font-weight: 750;
+}
+.logo {
+  display: grid;
+  place-items: center;
+  background: var(--green);
+  color: white;
+  border-radius: 12px;
+  width: 42px;
+  height: 42px;
+}
+.brand small {
+  font-size: 10px;
+  letter-spacing: 3px;
+  font-weight: 500;
+  margin-left: 12px;
+}
+.edition {
+  font-size: 10px;
+  letter-spacing: 2px;
+}
+#menu {
+  display: none;
+}
+aside {
+  position: absolute;
+  left: 0;
+  width: 290px;
+  padding: 34px 24px 50px 4%;
+  border-right: 1px solid var(--line);
+  min-height: calc(100vh - 86px);
+}
+label {
+  display: block;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+input {
+  width: 100%;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fff9;
+  padding: 10px;
+  font-size: 13px;
+}
+.progress-label {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  margin-top: 25px;
+}
+progress {
+  width: 100%;
+  height: 5px;
+  accent-color: var(--green);
+}
+nav h3 {
+  font-size: 10px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  margin: 26px 0 9px;
+}
+nav a {
+  display: flex;
+  gap: 10px;
+  padding: 7px 9px;
+  margin: 3px -9px;
+  text-decoration: none;
+  font-size: 12px;
+  border-radius: 6px;
+  color: #52675f;
+}
+nav a.active {
+  background: #dce7da;
+  color: #234d3f;
+  font-weight: 650;
+}
+nav a:hover {
+  background: #e6eadf;
+}
+.num {
+  opacity: 0.55;
+  font-variant-numeric: tabular-nums;
+}
+.side-note {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 36px;
+}
+main {
+  margin-left: 290px;
+  padding: 52px 6% 90px;
+  max-width: 1500px;
+}
+.eyebrow {
+  font-size: 11px;
+  letter-spacing: 2.5px;
+  text-transform: uppercase;
+  color: var(--green);
+  font-weight: 650;
+}
+h1 {
+  font-family: Georgia, serif;
+  font-size: clamp(38px, 4.8vw, 70px);
+  line-height: 1.08;
+  letter-spacing: -2px;
+  font-weight: 400;
+  max-width: 850px;
+  margin: 25px 0;
+}
+h1 em {
+  color: #66815f;
+}
+p {
+  max-width: 760px;
+}
+.lead {
+  font-size: 18px;
+  color: #5e7168;
+  max-width: 640px;
+}
+.actions {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 28px 0;
+}
+.btn {
+  display: inline-block;
+  text-decoration: none;
+  border: 1px solid var(--green);
+  padding: 11px 20px;
+  border-radius: 7px;
+  background: var(--green);
+  color: white;
+  font-size: 13px;
+}
+.btn.secondary {
+  background: transparent;
+  color: var(--green);
+}
+.hero {
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 28px;
+}
+.stats {
+  display: flex;
+  gap: 44px;
+  margin: 30px 0 0;
+}
+.stats b {
+  font:
+    29px Georgia,
+    serif;
+  display: block;
+}
+.stats span {
+  font-size: 11px;
+  color: var(--muted);
+}
+h2 {
+  font:
+    30px Georgia,
+    serif;
+  margin: 38px 0 14px;
+}
+.tracks {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 16px;
+}
+.track {
+  border: 1px solid var(--line);
+  padding: 24px;
+  border-radius: 12px;
+  text-decoration: none;
+  background: #fafaf4;
+  transition: transform 0.2s;
+}
+.track:hover {
+  transform: translateY(-4px);
+}
+.track b {
+  font:
+    24px Georgia,
+    serif;
+  display: block;
+  margin: 15px 0;
+}
+.track p {
+  font-size: 13px;
+  color: #66786e;
+}
+.tag {
+  display: inline-block;
+  border: 1px solid #c4d0bc;
+  border-radius: 30px;
+  padding: 3px 10px;
+  font-size: 10px;
+  letter-spacing: 1px;
+}
+.notice {
+  border-left: 3px solid #9bab75;
+  background: #e9ecdf;
+  padding: 16px 22px;
+  margin: 30px 0;
+  font-size: 13px;
+}
+.codebox {
+  background: #19352e;
+  border-radius: 12px;
+  overflow: hidden;
+  margin: 24px 0;
+  color: #deebdc;
+}
+.codehead {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 20px;
+  border-bottom: 1px solid #ffffff20;
+  font-size: 12px;
+  gap: 12px;
+}
+.codehead button {
+  background: #ffffff12;
+  border: 1px solid #ffffff30;
+  color: #e9f0df;
+  border-radius: 5px;
+  font-size: 11px;
+  padding: 5px 10px;
+}
+pre {
+  margin: 0;
+  padding: 24px;
+  overflow: auto;
+  font:
+    13px/1.85 Consolas,
+    monospace;
+  tab-size: 4;
+  max-height: 570px;
+}
+code {
+  font-family: Consolas, monospace;
+}
+.exercise {
+  padding: 24px 28px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fafaf5;
+  margin-top: 28px;
+}
+.exercise h2 {
+  margin: 0;
+  font-size: 24px;
+}
+details {
+  margin-top: 15px;
+}
+summary {
+  cursor: pointer;
+  color: var(--green);
+  font-size: 13px;
+}
+.bottomnav {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  border-top: 1px solid var(--line);
+  padding-top: 25px;
+  margin-top: 35px;
+}
+.bottomnav a {
+  font-size: 13px;
+}
+footer {
+  margin-left: 290px;
+  border-top: 1px solid var(--line);
+  padding: 25px 6%;
+  font-size: 11px;
+  color: var(--muted);
+}
+:focus-visible {
+  outline: 3px solid #b38c3d;
+  outline-offset: 4px;
+}
+@media (max-width: 1000px) {
+  aside {
+    width: 240px;
+    padding-left: 24px;
+  }
+  main,
+  footer {
+    margin-left: 240px;
+  }
+  .tracks {
+    grid-template-columns: 1fr;
+  }
+  .edition {
+    display: none;
+  }
+}
+@media (max-width: 700px) {
+  header {
+    height: 72px;
+  }
+  #menu {
+    display: block;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    background: transparent;
+    font-size: 12px;
+    padding: 6px 10px;
+  }
+  .brand small {
+    display: none;
+  }
+  aside {
+    display: none;
+    position: relative;
+    width: 100%;
+    min-height: 0;
+    padding: 24px;
+  }
+  body.menu-open aside {
+    display: block;
+  }
+  main,
+  footer {
+    margin-left: 0;
+    padding: 30px 6%;
+  }
+  h1 {
+    font-size: 43px;
+  }
+  .stats {
+    gap: 25px;
+  }
+  .lead {
+    font-size: 16px;
+  }
+  .codehead {
+    flex-wrap: wrap;
+  }
+  pre {
+    font-size: 12px;
+  }
+}

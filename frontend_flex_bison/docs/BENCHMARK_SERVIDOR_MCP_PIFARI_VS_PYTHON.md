@@ -14,10 +14,10 @@ Avaliar empiricamente se é viável escrever um **Servidor MCP completo diretame
 
 ## 2. Artefatos Comparados
 
-1. **Servidor MCP em Pifari:** `examples/servidor_mcp_pifari.pif` (36 linhas efetivas de código) + motor C11 `backend/mcp_server.c`.
+1. **Servidor MCP em Pifari:** `examples/servidor_mcp_pifari.pif` (36 linhas efetivas de código) + motor C11 `backend/integrations/mcp_server.c`.
 2. **Servidor MCP em Python:** `examples/servidor_mcp_python_ref.py` (156 linhas efetivas de código).
 3. **Teste de Integração Cliente Pifari ↔ Servidor Pifari:** `examples/teste_cliente_servidor_mcp_pifari.pif`.
-4. **Harness de Benchmark Head-to-Head:** `examples/benchmark_mcp_pifari_vs_python.py`.
+4. **Harness de Benchmark Head-to-Head:** `examples/benchmarks/benchmark_mcp_pifari_vs_python.py`.
 
 Ambos os servidores expõem exatamente as mesmas 4 ferramentas MCP (`tools/list`, `tools/call`) e 1 recurso (`resources/list`, `resources/read`):
 - `ping_echo(msg)`: round-trip puro de protocolo JSON-RPC 2.0 + despacho de função.
@@ -27,7 +27,7 @@ Ambos os servidores expõem exatamente as mesmas 4 ferramentas MCP (`tools/list`
 
 ---
 
-## 3. Resultados Reais Medidos (`python3 examples/benchmark_mcp_pifari_vs_python.py`)
+## 3. Resultados Reais Medidos (`python3 examples/benchmarks/benchmark_mcp_pifari_vs_python.py`)
 
 Validação matemática entre os dois servidores antes da medição de tempo:
 - `soma_quadrados(200000)` = `2666636666800000` (idêntico em Pifari e Python)

@@ -17,10 +17,8 @@ typedef enum {
 typedef struct PifariDiracExpr PifariDiracExpr;
 
 PifariDiracExpr *pifari_dirac_symbol(PifariDiracKind kind, const char *label);
-PifariDiracExpr *pifari_dirac_sum(const PifariDiracExpr *left,
-                                  const PifariDiracExpr *right);
-PifariDiracExpr *pifari_dirac_compose(const PifariDiracExpr *left,
-                                      const PifariDiracExpr *right);
+PifariDiracExpr *pifari_dirac_sum(const PifariDiracExpr *left, const PifariDiracExpr *right);
+PifariDiracExpr *pifari_dirac_compose(const PifariDiracExpr *left, const PifariDiracExpr *right);
 PifariDiracExpr *pifari_dirac_adjoint(const PifariDiracExpr *expr);
 char *pifari_dirac_format(const PifariDiracExpr *expr);
 void pifari_dirac_free(PifariDiracExpr *expr);

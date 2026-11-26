@@ -9,12 +9,7 @@
    IO    - fala com o mundo (print, MCP, tarefas, disco)
    A otimização só pode especializar funções PURE (e, com cuidado, READ). */
 
-typedef enum {
- EFFECT_PURE = 0,
- EFFECT_READ = 1,
- EFFECT_WRITE = 2,
- EFFECT_IO = 4
-} PifariEffect;
+typedef enum { EFFECT_PURE = 0, EFFECT_READ = 1, EFFECT_WRITE = 2, EFFECT_IO = 4 } PifariEffect;
 
 /* Efeito de um builtin pelo nome. Nome desconhecido devolve EFFECT_IO
    (conservador: não provamos pureza de algo que não conhecemos). */

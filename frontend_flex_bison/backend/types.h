@@ -7,17 +7,17 @@
    de execução depois (F3). */
 
 typedef enum {
- PT_ANY = 0,
- PT_NULL,
- PT_INT,
- PT_FLOAT,
- PT_BOOL,
- PT_STR,
- PT_LIST,
- PT_F64ARRAY,
- PT_RANGE,
- PT_TASK,
- PT_SHARED
+    PT_ANY = 0,
+    PT_NULL,
+    PT_INT,
+    PT_FLOAT,
+    PT_BOOL,
+    PT_STR,
+    PT_LIST,
+    PT_F64ARRAY,
+    PT_RANGE,
+    PT_TASK,
+    PT_SHARED
 } PifariType;
 
 /* Nome canônico para mensagens ("int", "float", ...). */

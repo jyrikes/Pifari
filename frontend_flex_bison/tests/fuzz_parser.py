@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Deterministic smoke-fuzzer for parser/runtime robustness; signal exits fail."""
+
 import os
 import random
 import subprocess
@@ -9,18 +10,52 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 BINARY = os.path.join(ROOT, "pifari")
 RNG = random.Random(20261019)
 TOKENS = [
-    "x", "y", "0", "1", "2.5", '"text"', "true", "false",
-    "+", "-", "*", "/", "==", "(", ")", "[", "]", "{", "}",
-    ",", ":", "=", "if", "else", "for", "in", "return", "print",
-    ">|", "|>", "and", "or", "\n", "    ", "# fuzz"
+    "x",
+    "y",
+    "0",
+    "1",
+    "2.5",
+    '"text"',
+    "true",
+    "false",
+    "+",
+    "-",
+    "*",
+    "/",
+    "==",
+    "(",
+    ")",
+    "[",
+    "]",
+    "{",
+    "}",
+    ",",
+    ":",
+    "=",
+    "if",
+    "else",
+    "for",
+    "in",
+    "return",
+    "print",
+    ">|",
+    "|>",
+    "and",
+    "or",
+    "\n",
+    "    ",
+    "# fuzz",
 ]
 
 
 def generate_case():
-    return "".join(
-        RNG.choice(TOKENS) + ("" if RNG.random() < 0.35 else " ")
-        for _ in range(RNG.randint(1, 45))
-    ) + "\n"
+    return (
+        "".join(
+            RNG.choice(TOKENS) + ("" if RNG.random() < 0.35 else " ")
+            for _ in range(RNG.randint(1, 45))
+        )
+        + "\n"
+    )
 
 
 def main():
@@ -33,8 +68,10 @@ def main():
             path = file.name
         try:
             result = subprocess.run(
-                [BINARY, path], cwd=ROOT,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                [BINARY, path],
+                cwd=ROOT,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
                 timeout=2,
             )
             if result.returncode < 0:

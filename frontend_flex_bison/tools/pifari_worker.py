@@ -5,8 +5,8 @@ Roda no lado Windows (a iGPU não é alcançável de dentro do WSL) e responde a
 interpretador o que existe de hardware realmente utilizável.
 
 Modos:
-  --list   lista dispositivos e sai (usado por backend/devices.c)
-  --stdio  servidor persistente para execução de kernels (usado por backend/gpu_client.c)
+  --list   lista dispositivos e sai (usado por backend/integrations/devices.c)
+  --stdio  servidor persistente para execução de kernels (usado por backend/integrations/gpu_client.c)
 
 Protocolo --stdio: uma requisição por linha, resposta por linha.
   AFFINE <n> <escala> <deslocamento> <base64 de n doubles>
@@ -99,7 +99,9 @@ class Gpu:
         self.prog = cl.Program(self.ctx, _KERNEL).build()
         # Kernel reutilizado entre chamadas: recuperar de novo custa caro.
         self._affine = cl.Kernel(self.prog, "affine_relu")
-        self._affine.set_scalar_arg_dtypes([None, None, np.float32, np.float32, np.int32])
+        self._affine.set_scalar_arg_dtypes(
+            [None, None, np.float32, np.float32, np.int32]
+        )
 
     def affine_relu(self, x, scale, bias):
         cl = self.cl

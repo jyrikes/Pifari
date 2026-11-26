@@ -4,6 +4,7 @@ Servidor MCP (2025-03-26) para Criacao de Videos de Reels (9:16)
 Integrado ao Google AI Studio (Free Tier via GEMINI_API_KEY) + Prompts Veo 2 / FFmpeg.
 Nunca registra, imprime ou expoe chaves de API em logs ou respostas.
 """
+
 import json
 import os
 import sys
@@ -34,7 +35,9 @@ _load_dotenv_if_present()
 
 def _call_gemini_aistudio(prompt: str) -> str:
     api_key = os.environ.get("GEMINI_API_KEY", "").strip()
-    model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+    model = (
+        os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip() or "gemini-2.5-flash"
+    )
     if not api_key:
         return ""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key}"
@@ -59,7 +62,9 @@ def _call_gemini_aistudio(prompt: str) -> str:
             if cands:
                 parts = cands[0].get("content", {}).get("parts", [])
                 if parts and "text" in parts[0]:
-                    clean = parts[0]["text"].strip().replace("\n", " ").replace("\r", " ")
+                    clean = (
+                        parts[0]["text"].strip().replace("\n", " ").replace("\r", " ")
+                    )
                     clean = clean.replace('"', "'").replace("\\", "/")
                     return clean
     except Exception:
@@ -117,14 +122,20 @@ TOOLS = [
         "annotations": {"readOnlyHint": True, "sideEffect": False},
         "inputSchema": {
             "type": "object",
-            "properties": {"tema": {"type": "string"}, "duracao_seg": {"type": "integer"}},
+            "properties": {
+                "tema": {"type": "string"},
+                "duracao_seg": {"type": "integer"},
+            },
         },
     },
     {
         "name": "gerar_prompts_veo_vertical",
         "description": "Converte o roteiro em prompts visuais 9:16 (1080x1920) para o Google Veo 2 / Imagen 3",
         "annotations": {"readOnlyHint": True, "sideEffect": False},
-        "inputSchema": {"type": "object", "properties": {"roteiro": {"type": "string"}}},
+        "inputSchema": {
+            "type": "object",
+            "properties": {"roteiro": {"type": "string"}},
+        },
     },
     {
         "name": "gerar_pacote_render_ffmpeg",
@@ -183,7 +194,11 @@ def handle_rpc(req: dict) -> dict | None:
             "billing_required_for_gemini": False,
             "gemini_api_key_configured": has_key,
             "aspect_ratio": "9:16 (1080x1920)",
-            "models": ["gemini-2.5-flash", "veo-2.0-generate-001", "imagen-3.0-generate-002"],
+            "models": [
+                "gemini-2.5-flash",
+                "veo-2.0-generate-001",
+                "imagen-3.0-generate-002",
+            ],
         }
         return {
             "jsonrpc": "2.0",
@@ -209,13 +224,21 @@ def handle_rpc(req: dict) -> dict | None:
         elif tname == "gerar_pacote_render_ffmpeg":
             out = tool_gerar_pacote_render_ffmpeg(args)
         else:
-            return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": "Unknown tool"}}
+            return {
+                "jsonrpc": "2.0",
+                "id": req_id,
+                "error": {"code": -32601, "message": "Unknown tool"},
+            }
         return {
             "jsonrpc": "2.0",
             "id": req_id,
             "result": {"content": [{"type": "text", "text": out}], "isError": False},
         }
-    return {"jsonrpc": "2.0", "id": req_id, "error": {"code": -32601, "message": "Method not found"}}
+    return {
+        "jsonrpc": "2.0",
+        "id": req_id,
+        "error": {"code": -32601, "message": "Method not found"},
+    }
 
 
 def main() -> None:

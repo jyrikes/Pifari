@@ -20,8 +20,12 @@ int main(void) {
     assert(text && strstr(text, "†") != NULL);
     free(text);
 
-    pifari_dirac_free(ket); pifari_dirac_free(bra); pifari_dirac_free(inner);
-    pifari_dirac_free(a); pifari_dirac_free(b); pifari_dirac_free(product);
+    pifari_dirac_free(ket);
+    pifari_dirac_free(bra);
+    pifari_dirac_free(inner);
+    pifari_dirac_free(a);
+    pifari_dirac_free(b);
+    pifari_dirac_free(product);
     pifari_dirac_free(adjoint);
     puts("Dirac symbolic algebra: OK");
     return 0;

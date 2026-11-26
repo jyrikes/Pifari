@@ -1,0 +1,44 @@
+@ Redução nativa de laço puro (docs/SPEC_SEMANTICA.md §8, etapa F3).
+@ As quatro primeiras funções têm exatamente a forma
+@   acc = <inteiro>; for i in range(<parametro>); acc = acc <op> expr(i); return acc
+@ e podem ser executadas por um kernel C com aritmética inteira checada.
+@ A última usa acumulador float: fica fora do formato e segue no interpretador.
+
+function soma_ate(n)
+  total = 0
+  for i in range(n)
+    total = total + i
+  return total
+
+function soma_quadrados(n)
+  total = 0
+  for i in range(n)
+    total = total + i * i
+  return total
+
+function saldo(n)
+  total = 100
+  for i in range(n)
+    total = total - i * 2
+  return total
+
+function fatorial(n)
+  total = 1
+  for i in range(n)
+    total = total * (i + 1)
+  return total
+
+function media(n)
+  total = 0.0
+  for i in range(n)
+    total = total + i
+  return total
+
+print("soma_ate(10):", soma_ate(10))
+print("soma_ate(200000):", soma_ate(200000))
+print("soma_quadrados(1000):", soma_quadrados(1000))
+print("saldo(10):", saldo(10))
+print("fatorial(10):", fatorial(10))
+print("media(4):", media(4))
+print("repeticao:", soma_ate(1000))
+print("repeticao:", soma_ate(1000))

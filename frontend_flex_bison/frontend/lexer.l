@@ -6,15 +6,53 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-int yycolumn=1;
-static int indent_stack[256]={0}, indent_top=0, pending_dedents=0, brace_depth=0;
+int yycolumn = 1;
+static int indent_stack[256] = {0}, indent_top = 0, pending_dedents = 0, brace_depth = 0;
 static int rawlex(void);
 #define YY_DECL static int rawlex(void)
 #define YY_USER_INIT BEGIN(BOL);
-#define YY_USER_ACTION do { yylloc.first_line=yylineno; yylloc.last_line=yylineno; yylloc.first_column=yycolumn; yylloc.last_column=yycolumn+yyleng-1; yycolumn+=yyleng; } while(0);
-static char *copy_text(const char*s,size_t n){char*p=malloc(n+1);if(!p){perror("malloc");exit(2);}memcpy(p,s,n);p[n]=0;return p;}
-static int indentation(const char*s,int n){int col=0,sp=0,tb=0;for(int i=0;i<n;i++){if(s[i]==' '){col++;sp++;}else if(s[i]=='\t'){col=(col/8+1)*8;tb++;}}if(sp&&tb){fprintf(stderr,"Pifari:%d: indentação mistura espaços e tabulações\n",yylineno);exit(1);}return col;}
-int yylex(void){if(pending_dedents>0){pending_dedents--;return DEDENT;}return rawlex();}
+#define YY_USER_ACTION                                                                             \
+    do {                                                                                           \
+        yylloc.first_line = yylineno;                                                              \
+        yylloc.last_line = yylineno;                                                               \
+        yylloc.first_column = yycolumn;                                                            \
+        yylloc.last_column = yycolumn + yyleng - 1;                                                \
+        yycolumn += yyleng;                                                                        \
+    } while (0);
+static char *copy_text(const char *s, size_t n) {
+    char *p = malloc(n + 1);
+    if (!p) {
+        perror("malloc");
+        exit(2);
+    }
+    memcpy(p, s, n);
+    p[n] = 0;
+    return p;
+}
+static int indentation(const char *s, int n) {
+    int col = 0, sp = 0, tb = 0;
+    for (int i = 0; i < n; i++) {
+        if (s[i] == ' ') {
+            col++;
+            sp++;
+        } else if (s[i] == '\t') {
+            col = (col / 8 + 1) * 8;
+            tb++;
+        }
+    }
+    if (sp && tb) {
+        fprintf(stderr, "Pifari:%d: indentação mistura espaços e tabulações\n", yylineno);
+        exit(1);
+    }
+    return col;
+}
+int yylex(void) {
+    if (pending_dedents > 0) {
+        pending_dedents--;
+        return DEDENT;
+    }
+    return rawlex();
+}
 %}
 ID [A-Za-z_][A-Za-z0-9_]*
 INT [0-9]+

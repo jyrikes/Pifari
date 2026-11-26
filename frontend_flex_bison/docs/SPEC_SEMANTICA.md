@@ -184,6 +184,15 @@ Nenhuma divergência atribuída a otimização.
 `examples/orquestrador_reels_aistudio.pif` chama a API do Gemini e consome quota. Ele não
 entra em `test-core`, `check-core` nem `test-equiv`.
 
+### 8.3 Redução nativa de laço puro
+
+Função na forma `acc = <inteiro>; for i in range(<parametro>); acc = acc <op> expr(i); return acc`
+— um parâmetro sem anotação, sem anotação de retorno, `op` em `+ - *` — pode ser executada
+pelo kernel de redução (plano `NATIVE`). O kernel opera em inteiros de 64 bits com detecção
+de overflow e devolve o mesmo valor do interpretador; as categorias de erro são as mesmas
+(`overflow de inteiro`, `range aceita inteiro entre 0 e 1000000`). `PIFARI_OPT=0` desliga o
+kernel e serve de oráculo. Vale o contrato do §8: a única diferença observável é o tempo.
+
 ---
 
 ## 13. Cache de aquecimento (F4)

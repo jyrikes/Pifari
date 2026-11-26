@@ -132,7 +132,9 @@ def handle_rpc_Object(msg: dict):
     if method == "resources/read":
         uri = params.get("uri", "")
         if uri == "resource://pifari/runtime_spec":
-            text = '{"engine":"Pifari-Agent-Runtime","version":"3.1","mcp":"2025-03-26"}'
+            text = (
+                '{"engine":"Pifari-Agent-Runtime","version":"3.1","mcp":"2025-03-26"}'
+            )
         elif uri == "resource://pifari/dataset_catalog":
             text = "datasets: [sensor_alpha, quantum_flux, mlp_weights]"
         else:
@@ -209,7 +211,9 @@ def handle_rpc_Object(msg: dict):
                 "jsonrpc": "2.0",
                 "id": req_id,
                 "result": {
-                    "content": [{"type": "text", "text": f"completed_after_{delay_ms}ms"}],
+                    "content": [
+                        {"type": "text", "text": f"completed_after_{delay_ms}ms"}
+                    ],
                     "isError": False,
                 },
             }

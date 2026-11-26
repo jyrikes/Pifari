@@ -65,7 +65,10 @@ TOOLS = [
         "name": "processar_vetor_f64",
         "description": "Executa cadeia vetorial F64",
         "annotations": {"readOnlyHint": True, "sideEffect": False},
-        "inputSchema": {"type": "object", "properties": {"tamanho": {"type": "string"}}},
+        "inputSchema": {
+            "type": "object",
+            "properties": {"tamanho": {"type": "string"}},
+        },
     },
     {
         "name": "matmul_bench",
@@ -157,7 +160,10 @@ def handle_msg(msg: dict):
         return {
             "jsonrpc": "2.0",
             "id": req_id,
-            "result": {"content": [{"type": "text", "text": str(res)}], "isError": False},
+            "result": {
+                "content": [{"type": "text", "text": str(res)}],
+                "isError": False,
+            },
         }
 
     return {

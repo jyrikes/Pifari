@@ -1,11 +1,26 @@
 # Interpretador Pifari — núcleo inicial
 
+## Organização mínima do compilador
+
+- `frontend/`: tokens, gramática e árvore sintática (`lexer.l`, `parser.y`, `ast.h`).
+- `backend/`: execução e semântica; tipos, efeitos, buffers e módulos C auxiliares.
+- `backend/optimization/`: IR, otimizador, kernels nativos, cache e planejamento.
+- `backend/integrations/`: agentes, MCP, dispositivos e comunicação GPU.
+- `tests/`: testes; `examples/`: programas Pifari; `tools/`: ferramentas auxiliares.
+- `docs/`: documentação e tutoriais; `dashboard/`: painel e telemetria.
+- `build/`: arquivos gerados; `pifari`: executável usado pelas integrações existentes.
+
+Cada par `.c`/`.h` fica junto. O diretório identifica a área; o nome do arquivo identifica o módulo.
+
+
 Implementação em C com Flex (lexer) e Bison (parser). O executável interpreta a AST.
+
+Consulte o [mapa de todos os arquivos e pastas](docs/MAPA_ARQUIVOS.md) para navegar pelo código.
 
 ## Compilar e executar no WSL
 
 ```bash
-cd /mnt/c/Users/'Yngrid Kalinne'/Desktop/Pifari_Definicao/frontend_flex_bison
+cd /mnt/c/Users/'Yngrid Kalinne'/OneDrive/Desktop/Pifari_Definicao/frontend_flex_bison
 make clean
 make
 ./pifari examples/fluxo_sequencial.pif
@@ -23,15 +38,15 @@ O projeto é separado em duas camadas:
 
 - `frontend/`: AST e dados de compilação (`ast.h`), gramática Bison (`parser.y`) e lexer Flex (`lexer.l`). O frontend apenas transforma o código-fonte em uma AST.
 - `backend/`: API e implementação do runtime (`runtime.h` e `runtime.c`). O backend recebe a AST e executa interpretação, bytecode, listas e fluxos.
-- `parser.tab.c`, `parser.tab.h` e `lex.yy.c`: artefatos gerados pelo frontend na raiz do projeto.
+- `parser.tab.c`, `parser.tab.h` e `lex.yy.c`: artefatos gerados em `build/generated/`; não devem ser editados à mão.
 
-O `Makefile` compila cada camada em objetos separados (`frontend/*.o` e `backend/*.o`) e só depois faz o link do executável. Isso permite testar ou substituir o backend sem misturar sua implementação com o parser.
+O `Makefile` compila cada camada em objetos separados (`build/obj/frontend/*.o` e `build/obj/backend/*.o`) e só depois faz o link do executável. Isso permite testar ou substituir o backend sem misturar sua implementação com o parser.
 
 ### Módulos de otimização (novo)
 
-- `backend/optimizer.h` / `optimizer.c`: grafo de expressões numéricas (IR), dobra de constantes seguras e avaliação/mapeamento por elemento sem arrays intermediários por operação. Identidades que possam alterar NaN ou zero com sinal não são aplicadas sem um futuro modo fast-math explícito.
-- `backend/operator_engine.h` / `operator_engine.c`: kernels nativos fundidos para arrays; atualmente oferece `map_affine_relu`, que calcula `max(0, escala*x + deslocamento)` em uma passagem e usa threads para vetores grandes quando solicitadas.
-- `backend/memory_plan.h` / `memory_plan.c`: planejador simples de slots temporários reutilizáveis a partir dos intervalos de vida dos valores.
+- `backend/optimization/optimizer.h` / `optimizer.c`: grafo de expressões numéricas (IR), dobra de constantes seguras e avaliação/mapeamento por elemento sem arrays intermediários por operação. Identidades que possam alterar NaN ou zero com sinal não são aplicadas sem um futuro modo fast-math explícito.
+- `backend/optimization/operator_engine.h` / `operator_engine.c`: kernels nativos fundidos para arrays; atualmente oferece `map_affine_relu`, que calcula `max(0, escala*x + deslocamento)` em uma passagem e usa threads para vetores grandes quando solicitadas.
+- `backend/optimization/memory_plan.h` / `memory_plan.c`: planejador simples de slots temporários reutilizáveis a partir dos intervalos de vida dos valores.
 - `backend/reversible.h` / `reversible.c`: exemplo didático de transformação reversível por XOR; aplicar a mesma máscara duas vezes restaura os bits originais.
 - `tests/test_optimizer.c`: testes unitários isolados dos módulos, executados por `make test`.
 
@@ -97,7 +112,7 @@ numeros >| numero >| print(numero) <| print("todas as tarefas terminaram")
 
 ## Benchmark de CPU: Pifari x Python
 
-Os arquivos `examples/benchmark_cpu.pif` e `examples/benchmark_cpu.py` calculam a soma dos quadrados para quatro tarefas de 200.000 iterações cada. O Python mede a mediana de cinco execuções sequenciais, com quatro threads e com quatro processos, tanto com o pool aquecido quanto incluindo a inicialização dos processos. Para executar ambos, com cinco amostras de CPU e três de matrizes por runtime:
+Os arquivos `examples/benchmarks/benchmark_cpu.pif` e `examples/benchmarks/benchmark_cpu.py` calculam a soma dos quadrados para quatro tarefas de 200.000 iterações cada. O Python mede a mediana de cinco execuções sequenciais, com quatro threads e com quatro processos, tanto com o pool aquecido quanto incluindo a inicialização dos processos. Para executar ambos, com cinco amostras de CPU e três de matrizes por runtime:
 
 ```bash
 make benchmark
@@ -108,18 +123,18 @@ O benchmark de CPU reporta o tempo do kernel JIT de Pifari, o tempo total do pro
 Para instrumentar uma execução e contar nós AST, buscas de variáveis, cópias de valores e operações de bytecode (a instrumentação adiciona overhead):
 
 ```bash
-PIFARI_PROFILE=1 ./pifari examples/benchmark_matrizes.pif
+PIFARI_PROFILE=1 ./pifari examples/benchmarks/benchmark_matrizes.pif
 ```
 
 `range(n)` cria um intervalo preguiçoso de inteiros de `0` a `n-1` (limite de 1.000.000), sem materializar uma lista. Ele funciona com `for`, `len` e indexação; quando impresso, é exibido como uma lista. Isso reduz bastante o custo de memória e alocação em laços numéricos. Resultados variam conforme CPU, carga do sistema e ambiente WSL.
 
 ## MLP do zero: Pifari vs Python
 
-O exemplo `examples/mlp_xor.pif` treina uma rede neural MLP 2–4–1 para XOR com backpropagation e sigmoid, usando somente loops, arrays F64 e o builtin matemático `exp`; não depende de bibliotecas de machine learning. `examples/mlp_xor.py` implementa o mesmo algoritmo em Python puro (somente biblioteca padrão). O benchmark `python3 examples/benchmark_mlp_xor.py` mede treinamento em cinco execuções Pifari e compara medianas, verificando também a acurácia de treino e teste. O conjunto de teste usa quatro coordenadas diferentes das amostras de treino; é um teste didático pequeno, não uma avaliação estatística de generalização.
+O exemplo `examples/mlp_xor.pif` treina uma rede neural MLP 2–4–1 para XOR com backpropagation e sigmoid, usando somente loops, arrays F64 e o builtin matemático `exp`; não depende de bibliotecas de machine learning. `examples/mlp_xor.py` implementa o mesmo algoritmo em Python puro (somente biblioteca padrão). O benchmark `python3 examples/benchmarks/benchmark_mlp_xor.py` mede treinamento em cinco execuções Pifari e compara medianas, verificando também a acurácia de treino e teste. O conjunto de teste usa quatro coordenadas diferentes das amostras de treino; é um teste didático pequeno, não uma avaliação estatística de generalização.
 
 ## Semântica e limites atuais
 
-O runtime é compilado com `-O3 -flto`. A busca de variáveis usa uma tabela hash por ambiente, os laços reutilizam o binding da variável de iteração, e a AST pré-calcula os códigos dos operadores e os valores dos literais numéricos. Chamadas de função usam frames contíguos de slots locais indexados por hash, evitando clonar e reconstruir toda a lista de bindings em cada chamada; os slots são inicializados com os valores visíveis no ambiente chamador para preservar o isolamento atual. Expressões aritméticas suportadas (`+`, `-`, `*`, `/`, `//`, `%`, `**` e negação numérica) compilam uma vez por nó da AST e reutilizam o bytecode; comparações, lógica, chamadas, strings e fluxos usam fallback interpretado. Após a primeira compilação, a verificação do bytecode usa leitura atômica sem mutex no caminho quente; a compilação inicial continua sincronizada. A VM usa uma pilha local de 32 slots e só aloca pilha no heap para expressões maiores. A AST também dobra constantes aritméticas seguras, evitando interpretar subexpressões constantes em tempo de execução. A indexação de matrizes/listas aninhadas copia apenas o elemento selecionado, e `+` concatena listas. No fluxo paralelo, a distribuição de itens usa contador atômico para não bloquear a cada tarefa. Um pool persistente de até quatro workers é iniciado sob demanda e reutilizado por todos os fluxos `>|` dentro da execução; ele é encerrado ao final do runtime. Para listas, o buffer da sequência é transferido para o trabalho em vez de duplicar profundamente todos os itens. Os workers usam bindings rasos de leitura compartilhada para o ambiente base e um slot local para a variável de iteração, enquanto funções usam frames locais isolados. `range(n)` é preguiçoso e não materializa uma lista. Essas otimizações preservam a semântica atual; o ganho depende do programa e da carga do sistema. Veja `PLANO_OTIMIZACAO_RUNTIME.md` para as próximas fases e os critérios de medição.
+O runtime é compilado com `-O3 -flto`. A busca de variáveis usa uma tabela hash por ambiente, os laços reutilizam o binding da variável de iteração, e a AST pré-calcula os códigos dos operadores e os valores dos literais numéricos. Chamadas de função usam frames contíguos de slots locais indexados por hash, evitando clonar e reconstruir toda a lista de bindings em cada chamada; os slots são inicializados com os valores visíveis no ambiente chamador para preservar o isolamento atual. Expressões aritméticas suportadas (`+`, `-`, `*`, `/`, `//`, `%`, `**` e negação numérica) compilam uma vez por nó da AST e reutilizam o bytecode; comparações, lógica, chamadas, strings e fluxos usam fallback interpretado. Após a primeira compilação, a verificação do bytecode usa leitura atômica sem mutex no caminho quente; a compilação inicial continua sincronizada. A VM usa uma pilha local de 32 slots e só aloca pilha no heap para expressões maiores. A AST também dobra constantes aritméticas seguras, evitando interpretar subexpressões constantes em tempo de execução. A indexação de matrizes/listas aninhadas copia apenas o elemento selecionado, e `+` concatena listas. No fluxo paralelo, a distribuição de itens usa contador atômico para não bloquear a cada tarefa. Um pool persistente de até quatro workers é iniciado sob demanda e reutilizado por todos os fluxos `>|` dentro da execução; ele é encerrado ao final do runtime. Para listas, o buffer da sequência é transferido para o trabalho em vez de duplicar profundamente todos os itens. Os workers usam bindings rasos de leitura compartilhada para o ambiente base e um slot local para a variável de iteração, enquanto funções usam frames locais isolados. `range(n)` é preguiçoso e não materializa uma lista. Essas otimizações preservam a semântica atual; o ganho depende do programa e da carga do sistema. Veja `docs/PLANO_OTIMIZACAO_RUNTIME.md` para as próximas fases e os critérios de medição.
 
 O pool persistente de `>| ` usa até quatro threads e espera todas terminarem antes de devolver a lista de resultados. O ambiente base é compartilhado apenas para leitura por bindings rasos privados de cada worker; a variável de iteração e variáveis locais de funções usam slots isolados. Alterações locais não são compartilhadas com outras tarefas nem com o escopo chamador. A saída de `print` é sincronizada. Isso é paralelismo real no runtime. Funções definidas pelo usuário também podem ser chamadas dentro do fluxo paralelo; cada chamada e cada worker usam ambientes isolados.
 
@@ -168,7 +183,7 @@ O caminho novo fica separado em módulos com contratos pequenos:
 - `backend/optimizer.[ch]`: dobra constantes seguras e calcula slots temporários por tempo de vida; `pifari_graph_workspace_slots` expõe a quantidade de slots planejados. O mapa serial/paralelo reutiliza esse workspace por worker.
 - `backend/native_kernel.[ch]`: emite C somente a partir de opcodes validados, compila um shared object com GCC e carrega a função nativa. O kernel é criado sob demanda e reutilizado pela definição da função durante a execução do programa.
 - `backend/numeric_buffer.[ch]`: buffer F64 contíguo, alinhado a 64 bytes, com checagem de overflow e inicialização/liberação explícitas.
-- `backend/operator_engine.c`: o kernel affine-ReLU declara independência dos elementos para permitir vetorização do compilador; a divisão de trabalho usa faixas de saída disjuntas.
+- `backend/optimization/operator_engine.c`: o kernel affine-ReLU declara independência dos elementos para permitir vetorização do compilador; a divisão de trabalho usa faixas de saída disjuntas.
 - `backend/dirac.[ch]`: álgebra simbólica experimental de bras, kets, operadores, soma, composição, adjunto e produto interno. É uma API C; ainda não é sintaxe da linguagem nem um sistema de álgebra linear simbólica completo.
 - `backend/reversible.[ch]`: programa de gates XOR-mask, NOT e SWAP; `pifari_reversible_uncompute` aplica os gates inversos na ordem reversa. O compilador ainda não infere automaticamente inversas de programas Pifari arbitrários.
 
@@ -185,7 +200,7 @@ Os arrays de variáveis ainda são listas genéricas no modelo de valores do run
 
 ### Benchmarks reproduzíveis (2026-10-19)
 
-Resultados medidos, ambiente, medianas, amostras, razões de desempenho e comandos para repetir estão em [BENCHMARKS_2026-10-19.md](BENCHMARKS_2026-10-19.md). Execute `make benchmark` para repetir os testes de CPU e multiplicação de matrizes. Os resultados indicam claramente a diferença entre o caminho nativo e os loops interpretados; os ganhos são específicos das cargas testadas, e o fluxo paralelo pode perder para o sequencial em tarefas pequenas.
+Resultados medidos, ambiente, medianas, amostras, razões de desempenho e comandos para repetir estão em [BENCHMARKS_2026-10-19.md](docs/benchmarks/BENCHMARKS_2026-10-19.md). Execute `make benchmark` para repetir os testes de CPU e multiplicação de matrizes. Os resultados indicam claramente a diferença entre o caminho nativo e os loops interpretados; os ganhos são específicos das cargas testadas, e o fluxo paralelo pode perder para o sequencial em tarefas pequenas.
 
 
 ## VM de bytecode: indexação e comparações
@@ -210,7 +225,7 @@ forçar conversões ou compilação nativa insegura.
 
 O builtin `map_fused_chain(["funcao_a", "funcao_b"], dados[, workers])` compõe grafos IR de funções aritméticas puras e compila uma única cadeia nativa. O kernel fica em cache no processo; a primeira chamada inclui compilação, chamadas seguintes reutilizam o kernel. Aceita listas numéricas e `range(N)`; o resultado é uma lista genérica.
 
-Exemplo: `examples/runtime_fused_chain.pif`. Benchmark medido e ressalvas: `BENCHMARK_FUSAO_CADEIAS_2026-10-19.md`.
+Exemplo: `examples/runtime_fused_chain.pif`. Benchmark medido e ressalvas: `docs/benchmarks/BENCHMARK_FUSAO_CADEIAS_2026-10-19.md`.
 
 Isso ainda não é fusão geral de qualquer AST nem arrays tipados de primeira classe. Funções com efeitos colaterais, condicionais, loops ou indexação de matrizes não entram no IR nativo atual. O buffer F64 é contíguo e alinhado, mas listas genéricas continuam sendo convertidas na fronteira de chamadas.
 
@@ -258,7 +273,7 @@ print(resultado[-1])
 
 O kernel e o IR indexado são cacheados na definição da função durante a execução. O primeiro uso inclui a compilação nativa; chamadas seguintes reutilizam o kernel. Por segurança e previsibilidade, o subset atual só aceita `A[i]` com o nome exato dos dois parâmetros e expressões aritméticas puras (`+`, `-`, `*`, `/`, unário `-`). Acesso com offsets (`A[i+1]`), múltiplos arrays, escritas indexadas dentro do kernel, efeitos colaterais e indexação de arrays multidimensionais ainda não fazem parte desse JIT.
 
-Para comparar com Python sem incluir o tempo de inicialização do processo nos tempos internos de Pifari, execute `python3 examples/benchmark_indexed_vs_python.py`. O script mede o kernel Pifari aquecido, o loop interpretado Pifari e duas variantes Python com o mesmo cálculo `out[i] = data[i] * 2 + 3`, valida resultados e reporta medianas.
+Para comparar com Python sem incluir o tempo de inicialização do processo nos tempos internos de Pifari, execute `python3 examples/benchmarks/benchmark_indexed_vs_python.py`. O script mede o kernel Pifari aquecido, o loop interpretado Pifari e duas variantes Python com o mesmo cálculo `out[i] = data[i] * 2 + 3`, valida resultados e reporta medianas.
 
 ---
 
@@ -329,3 +344,20 @@ Semântica normativa em `docs/SPEC_CONCORRENCIA.md`. Coberto por `make test-core
   teste). `PIFARI_WARMUP=off` desliga.
 - **Prova**: `make test-equiv` compara saída byte a byte entre `OPT=0` e `OPT=2`;
   `make test-golden` congela 23 programas. Números em `docs/OTIMIZACOES.md`.
+
+
+## Guia didático interativo
+
+O guia local em `docs/guia-didatico/` explica a teoria do lexer, parser, AST, runtime, VM/bytecode, tipos, otimizações, concorrência, MCP e testes. Inclui catálogo pesquisável dos fontes, testes, exemplos e documentos, glossário e quiz.
+
+No Windows, abra com:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\docs\guia-didatico\abrir_guia.ps1
+```
+
+O script regenera o catálogo e abre o site em localhost. O catálogo exclui o `.env` pessoal, binários e arquivos gerados em `build/`.
+
+## Tutorial interativo
+
+[Tutorial do básico ao avançado](docs/tutorial-pifari/dist/index.html) — aulas, exemplos e exercícios. Os arquivos de estilo, navegação e conteúdo ficam em `docs/tutorial-pifari/dist/assets/`.

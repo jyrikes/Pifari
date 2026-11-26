@@ -5,11 +5,11 @@ e `git status --short`. Não reler `runtime.c` inteiro (~2750 linhas).
 
 ## Estado
 
-- **Etapa atual:** F3c — IR estendido para laço puro (único item pendente; F0–F5 feitas)
-- **Testes verdes:** `test-core`, `check-core`, `test-equiv` (EQUIV_OK), `test-golden`
-  (GOLDEN_OK) e `test-gpu`
-- **Semântica:** `docs/SPEC_SEMANTICA.md` (§8 contrato, §11 check, §12 efeitos, §13 cache)
-- **Números:** `docs/OTIMIZACOES.md`
+- **Etapa atual:** F3 fechada — kernel de redução para laço puro (F0–F5 concluídas)
+- **Testes verdes:** `test-core`, `check-core`, `test-equiv` (EQUIV_OK, 27 iguais / 9 pulados),
+  `test-golden` (GOLDEN_OK, 24 iguais / 10 pulados) e `test-gpu`
+- **Semântica:** `docs/SPEC_SEMANTICA.md` (§8 contrato e §8.3 redução, §11 check, §12 efeitos, §13 cache)
+- **Números:** `docs/OTIMIZACOES.md` (§8 redução nativa)
 
 ## Concluído
 
@@ -21,23 +21,26 @@ e `git status --short`. Não reler `runtime.c` inteiro (~2750 linhas).
 - **F3a** — `plan.[ch]`: `PIFARI_OPT`, `PIFARI_OPT_DEBUG`, gates, `tests/equiv.sh`.
 - **F3b** — tiering do JIT (16 chamadas ou 50 ms; `PIFARI_JIT_THRESHOLD`,
   `PIFARI_JIT_BUDGET_MS`); `OPT=2` compila no registro.
+- **F3c** — JIT com aritmética checada: helpers com `__builtin_*_overflow`, divisão por zero e
+  `LLONG_MIN/-1`; paridade de erro com `OPT=0` verificada. `tests/equiv-skip.txt` lista os
+  programas com efeito dentro de `>|` (ordem de print depende do escalonamento).
+- **F3d** — `reduce.[ch]`: kernel nativo de **redução** para o corpo
+  `acc = <inteiro>; for i in range(param); acc = acc <op> expr(i); return acc`.
+  C gerado em inteiro de 64 bits com `__builtin_*_overflow`, cache por hash em
+  `~/.cache/pifari/kernels/`, plano `NATIVE` tentado antes do JIT (tier-up em `OPT=1`,
+  registro em `OPT=2`, desligado em `OPT=0`). Overflow e limite de `range` com paridade de
+  erro. Laço de 1 000 000: 132–151 ms (`OPT=0`) → 14–18 ms (`OPT=2`).
 - **F4** — `cache.[ch]` + `warmup.txt`: cache persistente em `~/.cache/pifari`, seed por
   função, gravação atômica, `PIFARI_WARMUP=off`. Frio 2 572 ms → morno 33 ms.
-- **F3c** — JIT com aritmética checada: helpers com `__builtin_*_overflow`, divisão por zero e `LLONG_MIN/-1`; ABI `pifari_jit(arg, &err)`; paridade de erro com `OPT=0` verificada. `tests/equiv-skip.txt` lista os programas com efeito dentro de `>|` (ordem de print depende do escalonamento).
-- **F5** — `tests/golden.sh` + `make test-golden` (23 programas congelados, 10 pulados por
+- **F5** — `tests/golden.sh` + `make test-golden` (24 programas congelados, 10 pulados por
   não determinismo), `docs/OTIMIZACOES.md`, README e STATUS_REAL atualizados.
 
-## Pendente (próximo passo único)
+## Pendente (fora do escopo do plano)
 
-**IR estendido para laço puro** (`backend/ast_ir.[ch]`):
-1. Reconhecer corpo de função cujo único efeito é um `for i in range(n)` com acumulação
-   (`total = total + f(i)`) ou mapeamento em `f64_array`.
-2. Emitir kernel C de **redução** (além do `map` atual) e cachear em `~/.cache/pifari/kernels`.
-3. Só aceitar função `EFFECT_PURE`, sem escrita fora do laço; comparar com `eval` no
-   `test-equiv` e medir em `docs/OTIMIZACOES.md`.
-
-Enquanto isso não entra, o JIT já cobre o laço (400×) — o kernel nativo reduziria mais,
-mas o ganho incremental é menor que o risco; por isso é o único item deixado em aberto.
+- Laço sobre `f64_array` (em vez de `range`) como redução nativa: hoje o map indexado
+  (`(A, i)`) cobre o caso de mapeamento, mas não há acumulação sobre array.
+- Buffer residente na GPU com handles (1 transporte para k operações).
+- Vetorização SIMD manual e seleção adaptativa por amostra.
 
 ## Observações
 
@@ -46,6 +49,8 @@ mas o ganho incremental é menor que o risco; por isso é o único item deixado 
 - `teste_cliente_servidor_mcp_pifari.pif` é flaky (mock MCP).
 - `runtime_map_fused.pif` às vezes falha em criar o kernel nativo e cai para o caminho
   genérico; por isso não foi congelado no golden.
+- A redução nativa exige um parâmetro **sem anotação** e **sem anotação de retorno**:
+  anotação promoveria int→float no interpretador e o kernel devolveria int.
 
 ## Decisões (não reabrir)
 
@@ -54,11 +59,12 @@ mas o ganho incremental é menor que o risco; por isso é o único item deixado 
 - `OPT=0` = referência (sem bytecode, JIT ou kernel).
 - Contrato de equivalência vale para programa determinístico.
 - Manifesto de aquecimento nunca muda resultado, só quando o JIT entra.
+- Redução nativa só para aritmética inteira; float continua no interpretador.
 
 ## Arquivos tocados
 
-- `backend/`: types, typecheck, effects, plan, cache (novos) + runtime, native_kernel
+- `backend/`: types, typecheck, effects, plan, cache, reduce (novos) + runtime, native_kernel
 - `frontend/parser.y`, `frontend/lexer.l`, `Makefile`
-- `tests/`: equiv.sh, golden.sh, golden/ (23 pares .txt/.exit)
+- `tests/`: equiv.sh, golden.sh, golden/ (24 pares .txt/.exit)
 - `docs/`: SPEC_SEMANTICA, OTIMIZACOES (novos), STATUS_REAL, EXECUCAO
-- `examples/`: tipos.pif, efeitos.pif (novos)
+- `examples/`: tipos.pif, efeitos.pif, reducao_nativa.pif, reducao_erro.pif (novos)

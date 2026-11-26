@@ -1,4 +1,4 @@
-#include "../backend/native_kernel.h"
+#include "../backend/optimization/native_kernel.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,12 +17,14 @@ int main(void) {
     double input_values[] = {1, 2, 3, 4};
     double output_values[4] = {0};
     assert(pifari_native_kernel_map(kernel, input_values, output_values, 4, 1) == 0);
-    for (size_t i = 0; i < 4; ++i) assert(output_values[i] == input_values[i] * 2 + 1);
+    for (size_t i = 0; i < 4; ++i)
+        assert(output_values[i] == input_values[i] * 2 + 1);
     size_t length = 20000;
     double *large_input = malloc(length * sizeof(*large_input));
     double *large_output = malloc(length * sizeof(*large_output));
     assert(large_input && large_output);
-    for (size_t i = 0; i < length; ++i) large_input[i] = (double)i - 10000.0;
+    for (size_t i = 0; i < length; ++i)
+        large_input[i] = (double)i - 10000.0;
     assert(pifari_native_kernel_map(kernel, large_input, large_output, length, 4) == 0);
     for (size_t i = 0; i < length; ++i)
         assert(large_output[i] == large_input[i] * 2.0 + 1.0);

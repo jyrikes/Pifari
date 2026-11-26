@@ -4,11 +4,33 @@
 #include "frontend/ast.h"
 #include "backend/runtime.h"
 #include "backend/typecheck.h"
-int yylex(void); void yyerror(const char *s);
-extern int yylineno, yycolumn; extern FILE *yyin;
-Node *pifari_root=NULL;
-static Node *as_block(Node *items,int l,int c){Node*b=node_new("Block",NULL,l,c);if(items){for(size_t i=0;i<items->count;i++)node_add(b,items->children[i]);free(items->children);free(items->kind);free(items->value);free(items);}return b;}
-static char *join_path(char*a,char*b){size_t n=strlen(a)+strlen(b)+2;char*p=malloc(n);if(!p)exit(2);snprintf(p,n,"%s.%s",a,b);free(a);free(b);return p;}
+int yylex(void);
+void yyerror(const char *s);
+extern int yylineno, yycolumn;
+extern FILE *yyin;
+Node *pifari_root = NULL;
+static Node *as_block(Node *items, int l, int c) {
+    Node *b = node_new("Block", NULL, l, c);
+    if (items) {
+        for (size_t i = 0; i < items->count; i++)
+            node_add(b, items->children[i]);
+        free(items->children);
+        free(items->kind);
+        free(items->value);
+        free(items);
+    }
+    return b;
+}
+static char *join_path(char *a, char *b) {
+    size_t n = strlen(a) + strlen(b) + 2;
+    char *p = malloc(n);
+    if (!p)
+        exit(2);
+    snprintf(p, n, "%s.%s", a, b);
+    free(a);
+    free(b);
+    return p;
+}
 %}
 %define parse.error detailed
 %expect 7 /* conflitos shift/reduce conhecidos; gramática ainda em refinamento */
@@ -144,19 +166,38 @@ arguments_opt: %empty {$$=node_new("Arguments",NULL,@$.first_line,@$.first_colum
 arguments: expr {$$=node_add(node_new("Arguments",NULL,@1.first_line,@1.first_column),$1);} | arguments COMMA expr {$$=node_add($1,$3);};
 type_expr: TYPE {$$=node_new("Type",$1,@1.first_line,@1.first_column);free($1);} | IDENTIFIER {$$=node_new("Type",$1,@1.first_line,@1.first_column);free($1);};
 %%
-void yyerror(const char*s){fprintf(stderr,"Pifari:%d:%d: erro sintático: %s\n",yylloc.first_line,yylloc.first_column,s);}
-int main(int argc,char**argv){
- int check_mode=0;const char*path=NULL;
- if(argc==3&&!strcmp(argv[1],"--check")){check_mode=1;path=argv[2];}
- else if(argc==2&&strcmp(argv[1],"--check")){path=argv[1];}
- else {fprintf(stderr,"Uso: %s [--check] arquivo.pif\n",argv[0]);return 2;}
- yyin=fopen(path,"r");if(!yyin){perror(path);return 2;}
- int parsed=yyparse();int status=1;
- if(parsed==0&&pifari_root){
-  if(check_mode){
-   int errors=pifari_typecheck_program(pifari_root);
-   status=errors?2:0;
-  }else status=runtime_execute(pifari_root);
- }
- node_free(pifari_root);fclose(yyin);return status;
+
+void yyerror(const char *s) {
+    fprintf(stderr, "Pifari:%d:%d: erro sintático: %s\n", yylloc.first_line, yylloc.first_column,
+            s);
+}
+int main(int argc, char **argv) {
+    int check_mode = 0;
+    const char *path = NULL;
+    if (argc == 3 && !strcmp(argv[1], "--check")) {
+        check_mode = 1;
+        path = argv[2];
+    } else if (argc == 2 && strcmp(argv[1], "--check")) {
+        path = argv[1];
+    } else {
+        fprintf(stderr, "Uso: %s [--check] arquivo.pif\n", argv[0]);
+        return 2;
+    }
+    yyin = fopen(path, "r");
+    if (!yyin) {
+        perror(path);
+        return 2;
+    }
+    int parsed = yyparse();
+    int status = 1;
+    if (parsed == 0 && pifari_root) {
+        if (check_mode) {
+            int errors = pifari_typecheck_program(pifari_root);
+            status = errors ? 2 : 0;
+        } else
+            status = runtime_execute(pifari_root);
+    }
+    node_free(pifari_root);
+    fclose(yyin);
+    return status;
 }

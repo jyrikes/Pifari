@@ -12,10 +12,10 @@
 | Carga / Benchmark | Métrica | Baseline (Antes) | Pós-Otimização (Depois) | Ganho Real | Causa Principal do Ganho |
 |---|---|---:|---:|---:|---|
 | **MLP XOR 2-4-1 (3000 épocas)** (`examples/mlp_xor.pif` em `make test`) | Tempo de treino (`train_ms`) | **121,77 ms** | **48,84 ms** | **2,49x mais rápido** (-59,9%) | `BC_EXP` na VM de bytecode + fast-path `BC_LOAD + BC_INDEX` sem refcount + `LocalFrame` na stack + `array_set` in-place |
-| **MLP XOR Benchmark Script** (`python3 examples/benchmark_mlp_xor.py`, mediana de 5 runs) | Mediana Pifari (`train_ms`) | **685,44 ms** | **111,61 ms** | **6,14x mais rápido** (-83,7%) | Compilação de `sigmoid(z)` (`exp`) para bytecode VM e eliminação de alocações heap por chamada de função |
+| **MLP XOR Benchmark Script** (`python3 examples/benchmarks/benchmark_mlp_xor.py`, mediana de 5 runs) | Mediana Pifari (`train_ms`) | **685,44 ms** | **111,61 ms** | **6,14x mais rápido** (-83,7%) | Compilação de `sigmoid(z)` (`exp`) para bytecode VM e eliminação de alocações heap por chamada de função |
 | **MLP XOR Fluxo** (`examples/mlp_xor_fluxo.pif`) | Tempo de treino (`treino_ms`) | **121,77 ms** | **49,11 ms** | **2,48x mais rápido** (-59,7%) | VM de funções com `BC_EXP` e indexação direta de `f64_array` |
 | **Carga de Fluxo Puro — Paralelo** (`examples/carga_fluxo_puro.pif`, 500.000 itens) | `fluxo_paralelo_ms` | **3036,87 ms** | **2102,13 ms** | **1,44x mais rápido** (-30,8%) | Pré-cômputo único de `slot_names`/`annotate_slot_nodes` e `LocalFrame` na stack sem `calloc`/`free` nem `memset` de 2 KB por chamada |
-| **Carga de Fluxo Puro — Cadeia Fundida (Com Compilação/Cache)** (`examples/carga_fluxo_puro.pif`, 500.000 itens, 3 etapas) | `cadeia_fundida_ms_inclui_compilacao` | **3611,61 ms** | **603,48 ms** | **5,98x mais rápido** (-83,3%) | Cache persistente de objetos `.so` por hash FNV-1a 64-bit em `/tmp/pifari_kernel_cache_<uid>` em `backend/native_kernel.c` |
+| **Carga de Fluxo Puro — Cadeia Fundida (Com Compilação/Cache)** (`examples/carga_fluxo_puro.pif`, 500.000 itens, 3 etapas) | `cadeia_fundida_ms_inclui_compilacao` | **3611,61 ms** | **603,48 ms** | **5,98x mais rápido** (-83,3%) | Cache persistente de objetos `.so` por hash FNV-1a 64-bit em `/tmp/pifari_kernel_cache_<uid>` em `backend/optimization/native_kernel.c` |
 | **Carga de Fluxo Puro — Cadeia Fundida Aquecida** (`examples/carga_fluxo_puro.pif`, 500.000 itens, 3 etapas) | `cadeia_fundida_ms_aquecido` | **42,99 ms** | **38,21 ms** | **1,13x mais rápido** (-11,1%) | Buffer `f64_array` direto sem cópias extras |
 
 ---
@@ -33,7 +33,7 @@
    - Sequências `BC_LOAD` seguidas de `BC_INDEX` sobre `V_F64_ARRAY` leem `array->data[idx]` diretamente sem incrementar/decrementar `refs` atomicamente a cada acesso.
 4. **Sintaxe de Atribuição Indexada Direta (`A[i] = val` e `A[i][j] = val`) (`frontend/parser.y`, `backend/runtime.c`):**
    - Unificada a regra de atribuição no parser mantendo exatamente `%expect 7` (zero novos conflitos shift/reduce), permitindo mutação in-place de `f64_array` e listas aninhadas.
-5. **Cache Persistente de Kernels C Nativos (`backend/native_kernel.c`):**
+5. **Cache Persistente de Kernels C Nativos (`backend/optimization/native_kernel.c`):**
    - Kernels gerados em C são indexados pelo hash FNV-1a 64-bit do código-fonte e armazenados em `/tmp/pifari_kernel_cache_<uid>` com permissões `0700` e verificação de proprietário (`st_uid == getuid()`).
 
 ---
@@ -44,7 +44,7 @@
 # No WSL (Ubuntu-24.04) dentro de frontend_flex_bison:
 make clean && make -j2
 ./pifari examples/carga_fluxo_puro.pif
-python3 examples/benchmark_mlp_xor.py
+python3 examples/benchmarks/benchmark_mlp_xor.py
 ./pifari examples/mlp_xor.pif
 ./pifari examples/mlp_xor_fluxo.pif
 ```

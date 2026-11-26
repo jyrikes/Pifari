@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="description"
+      content="Aprenda Pifari: tutorial em português com exemplos do runtime atual, exercícios e trilhas do básico ao avançado."
+    />
+    <title>Pifari — um caminho para aprender</title>
+    <link rel="stylesheet" href="assets/style.css" />
+  </head>
+  <body>
+    <header>
+      <a class="brand" href="#inicio"
+        ><span class="logo">p.</span>pifari <small>ACADEMIA</small></a
+      ><span class="edition">LINGUAGEM EXPERIMENTAL · GUIA 2026</span
+      ><button
+        id="menu"
+        aria-label="Abrir ou fechar aulas"
+        aria-expanded="false"
+      >
+        ☰ Aulas
+      </button>
+    </header>
+    <aside>
+      <label for="search">Encontre uma aula</label
+      ><input id="search" type="search" placeholder="Buscar assunto…" />
+      <div class="progress-label">
+        <span>Seu percurso</span><b id="count"></b>
+      </div>
+      <progress id="progress" max="18" value="0"></progress>
+      <nav id="nav" aria-label="Aulas"></nav>
+      <p class="side-note">
+        Aprenda com o código que existe.<br />Uma etapa de cada vez.
+      </p>
+    </aside>
+    <div style="margin:16px 5%;text-align:right"><a class="btn" href="estudo.html">Plano até 12h · livros e vídeos →</a></div><main id="main"></main>
+    <footer>
+      Feito a partir dos exemplos e fontes locais do Pifari · Revisão: 7 nov.
+      2026<br />Progresso guardado somente neste navegador.
+    </footer>
+    <script src="assets/lessons.js"></script>
+    <script src="assets/app.js"></script>
+  </body>
+</html>

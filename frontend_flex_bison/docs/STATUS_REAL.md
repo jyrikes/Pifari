@@ -56,7 +56,7 @@ Dos 37 arquivos `.pif` em `examples/`, 25 estão em `make test`, 5 estão em `ma
 | Carga / Benchmark | Métrica Medida no Baseline | Observação Técnica |
 | :--- | :--- | :--- |
 | `examples/carga_fluxo_puro.pif` (`N = 500.000`, 3 etapas) | `fluxo_paralelo_ms`: **6.535,83 ms**<br>`cadeia_fundida_ms_inclui_compilacao`: **2.426,60 ms**<br>`cadeia_fundida_ms_aquecido`: **120,97 ms** | `native_kernel.c` recompila o `.so` sem cache em disco em toda execução; `try_native_map_flow` converte `V_LIST` ↔ `double*` em cada etapa e rejeita `V_RANGE` e `V_F64_ARRAY`. |
-| `examples/benchmark_mlp_xor.py` (MLP 2–4–1, 3.000 épocas SGD escalar) | Mediana Pifari: **685,44 ms**<br>Mediana Python: **56,58 ms**<br>Razão Python/Pifari: **12,11×** mais lento que Python | O treino roda em laços interpretados; cada chamada a `sigmoid(x)` (36.000 chamadas) percorre e re-anota a AST 3 vezes (`count_nodes`, `collect_slot_names`, `annotate_slot_nodes`), aloca `LocalFrame` no heap e não compila `exp()` em bytecode (`BC_EXP` ausente). |
+| `examples/benchmarks/benchmark_mlp_xor.py` (MLP 2–4–1, 3.000 épocas SGD escalar) | Mediana Pifari: **685,44 ms**<br>Mediana Python: **56,58 ms**<br>Razão Python/Pifari: **12,11×** mais lento que Python | O treino roda em laços interpretados; cada chamada a `sigmoid(x)` (36.000 chamadas) percorre e re-anota a AST 3 vezes (`count_nodes`, `collect_slot_names`, `annotate_slot_nodes`), aloca `LocalFrame` no heap e não compila `exp()` em bytecode (`BC_EXP` ausente). |
 
 ---
 
@@ -69,7 +69,7 @@ Dos 37 arquivos `.pif` em `examples/`, 25 estão em `make test`, 5 estão em `ma
    - `bc_compile_node` não compila chamadas ao builtin matemático `exp(x)`, impedindo que `sigmoid(x)` use a VM de bytecode.
 3. **Inconsistência Semântica em `BC_IDIV` (`backend/runtime.c:289` vs `892`):**
    - `eval_bytecode` trunca divisão inteira em direção a zero (`a.as.i / b.as.i`), enquanto `execute_function_bytecode` usa `floor(x / y)` em `double`.
-4. **Ausência de Cache em Disco em `backend/native_kernel.c` (`L118-143`):**
+4. **Ausência de Cache em Disco em `backend/optimization/native_kernel.c` (`L118-143`):**
    - Enquanto `jit_compile_function` em `runtime.c` faz cache em `/tmp/pifari_jit_cache_<uid>`, `native_kernel.c` recompila o código C via `gcc` em todo processo e apaga o `.so` logo após `dlopen`.
 5. **Restrição Artificial de `V_F64_ARRAY` e `V_RANGE` nos Fluxos `>|` e `|>` (`backend/runtime.c:1084, 1135, 1245`):**
    - `try_native_map_flow` só aceita `V_LIST` (rejeitando `V_RANGE` e `V_F64_ARRAY`), e `eval_parallel_flow` / `Flow("|>")` rejeitam `V_F64_ARRAY` na validação de tipo.

@@ -56,13 +56,15 @@ Desligar: `PIFARI_WARMUP=off`.
 
 - `PIFARI_OPT=0` desliga bytecode, JIT e kernel nativo (referência).
 - `make test-equiv` compara stdout **byte a byte** e código de saída entre `OPT=0` e `OPT=2`.
-  Resultado atual: **26 programas idênticos**, 8 pulados por serem não determinísticos por
+  Resultado atual: **27 programas idênticos**, 9 pulados por serem não determinísticos por
   natureza (tempo, `thread_id`, print dentro de fluxo paralelo).
-- `make test-golden` congela a saída de 23 programas e acusa qualquer mudança.
+- `make test-golden` congela a saída de 24 programas e acusa qualquer mudança.
 
 ## 5. O que ainda não é otimizado
 
-- Laço `for` puro ainda não vira kernel nativo; o IR cobre expressão unária e `(A, i)`.
+- A redução nativa cobre só a forma estrita `acc = inteiro; for i in range(param); acc = acc <op> expr(i); return acc`
+  com um parâmetro sem anotação; outras formas (float, dois parâmetros, escrita fora do laço,
+  índice) ficam no interpretador/JIT. O IR de mapa continua cobrindo expressão unária e `(A, i)`.
 - Sem vetorização SIMD explícita.
 - Sem seleção adaptativa entre planos por amostra (o tiering cobre o caso comum).
 - GPU: existe e funciona, mas perde da CPU por transporte (`docs/BENCHMARKS_GPU.md`).
@@ -90,3 +92,62 @@ de erro (`pifari_jit_add/sub/mul/div/mod/neg`), assinatura
 A mensagem do JIT nomeia a função (`overflow de inteiro em 'cresce'`) em vez da linha do
 operador; a categoria e o código de saída são os mesmos. É a diferença aceita no contrato:
 o mesmo erro, no mesmo ponto lógico.
+
+## 8. Redução nativa de laço puro (F3)
+
+O item que faltava: reconhecer a função cujo corpo inteiro é uma acumulação em `range` e
+executá-la em um kernel C de redução, além do kernel de mapa que já existia.
+
+Forma aceita (tudo o mais fica de fora, sem aviso e sem mudança de resultado):
+
+```pifari
+function soma_ate(n)
+  total = 0
+  for i in range(n)
+    total = total + i
+  return total
+```
+
+Regras de elegibilidade:
+- um parâmetro **sem anotação** (o limite do `range`); sem anotação de retorno;
+- corpo com exatamente `acc = <inteiro>; for i in range(<parametro>); return acc`;
+- passo `acc = acc <op> expr(i)` com `op` em `+ - *` e `expr` só com `i`, inteiros e `+ - *`;
+- nomes distintos para acumulador, iterador e parâmetro; acumulador sempre à esquerda.
+
+Garantias de equivalência:
+- aritmética em `long long` com `__builtin_*_overflow`: overflow continua sendo **erro de
+execução**, com o mesmo `exit 1` e a mesma saída parcial do interpretador;
+- `range` mantém o limite 0..1000000 e a mesma mensagem em caso de violação;
+- `PIFARI_OPT=0` nunca compila nem usa o kernel (é o oráculo);
+- com `OPT=1` o kernel entra no tier-up (16 chamadas ou 50 ms, ou direto se o manifesto de
+aquecimento já trouxe a função madura); com `OPT=2` compila no registro.
+
+Medição (`soma_ate(1000000)`, 7 execuções, mínimo/mediana, WSL/gcc 13.3):
+
+| Configuração | Tempo total |
+|---|---:|
+| Programa vazio (`print(1)`) — custo de partida | 9–11 ms |
+| `OPT=0` (interpretador) | **132–151 ms** |
+| `OPT=2` (kernel de redução) | **14–18 ms** |
+
+Descontando a partida, o laço cai de ~140 ms para ~5 ms (**~28×**). Em regime o JIT chega ao
+mesmo patamar para essa forma; o ganho do kernel é ser um plano dedicado, cacheado por hash
+do C gerado em `~/.cache/pifari/kernels/`, sem depender da análise de slots do JIT.
+
+Reproduzir:
+```bash
+cat > /tmp/soma.pif <<EOF
+function soma_ate(n)
+  total = 0
+  for i in range(n)
+    total = total + i
+  return total
+print(soma_ate(1000000))
+EOF
+PIFARI_OPT=0 ./pifari /tmp/soma.pif
+PIFARI_OPT=2 PIFARI_OPT_DEBUG=1 ./pifari /tmp/soma.pif   # log: -> native (reducao nativa)
+```
+
+Validação: `examples/reducao_nativa.pif` (quatro formas elegíveis + uma de float que deve
+ficar no interpretador) e `examples/reducao_erro.pif` (overflow: `exit 1` e mesma saída nos
+dois modos) entraram em `test-core`, `check-core`, `test-equiv` e `test-golden`.

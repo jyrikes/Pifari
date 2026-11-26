@@ -2,7 +2,7 @@
 
 **Data:** 2026-10-23  
 **Projeto:** `Pifari_Definicao/frontend_flex_bison`  
-**Módulos C:** `backend/agent_runtime.h`, `backend/agent_runtime.c`, `backend/mcp_gateway.h`, `backend/mcp_gateway.c`
+**Módulos C:** `backend/integrations/agent_runtime.h`, `backend/integrations/agent_runtime.c`, `backend/integrations/mcp_gateway.h`, `backend/integrations/mcp_gateway.c`
 
 ---
 
@@ -10,9 +10,9 @@
 
 O Pifari evoluiu em duas frentes integradas, porém desacopladas arquiteturalmente:
 
-1. **Frente A — Compilador, VM numérica e Kernels Nativos (`frontend/`, `backend/runtime.c`, `backend/ast_ir.c`, `backend/optimizer.c`, `backend/native_kernel.c`):**
+1. **Frente A — Compilador, VM numérica e Kernels Nativos (`frontend/`, `backend/runtime.c`, `backend/optimization/ast_ir.c`, `backend/optimization/optimizer.c`, `backend/optimization/native_kernel.c`):**
    - Responsável pela avaliação de expressões, bytecode de funções, arrays contíguos (`f64_array` com indexação direta `A[i] = val`), operadores de fluxo (`|>`, `>|`, `|<`, `<|`), JIT inteiro e kernels C fundidos com cache persistente de `.so` por hash FNV-1a 64-bit.
-2. **Frente B — Plataforma de Orquestração Multiagente e MCP (`backend/agent_runtime.c` e `backend/mcp_gateway.c`):**
+2. **Frente B — Plataforma de Orquestração Multiagente e MCP (`backend/integrations/agent_runtime.c` e `backend/integrations/mcp_gateway.c`):**
    - Totalmente independente da gramática Flex/Bison (`frontend/parser.y` permanece em `%expect 7` com zero novos conflitos).
    - Desacopla o **protocolo de coordenação de ferramentas/recursos (MCP JSON-RPC 2.0)** do **adaptador de modelo/agente (`model_adapter`)**, evitando acoplamento do compilador a qualquer provedor específico de IA.
 
@@ -20,7 +20,7 @@ O Pifari evoluiu em duas frentes integradas, porém desacopladas arquiteturalmen
 flowchart TD
     PifScript["Programa Pifari (.pif)"] --> Runtime["Runtime Pifari (backend/runtime.c)"]
     Runtime --> NumericEngine["Frente A: VM Bytecode + Arrays F64 + Kernels Nativos C/POSIX"]
-    Runtime --> AgentRuntime["Frente B: Agent Runtime (backend/agent_runtime.c)"]
+    Runtime --> AgentRuntime["Frente B: Agent Runtime (backend/integrations/agent_runtime.c)"]
 
     subgraph Orquestrador ["Plataforma Multiagente (7 Módulos)"]
         AgentMgr["1. Agent Manager"]
@@ -60,7 +60,7 @@ flowchart TD
 - Gerencia o ciclo de vida dos agentes registrados via `Agent(id, role, goal, adapter, max_concurrency, timeout_ms)`.
 - Mantém contadores atômicos/protegidos por mutex (`active_tasks`, `completed_tasks`, `failed_tasks`, `cancelled_tasks`), `version`, último resultado estruturado (`last_result`), último erro (`last_error`) e desacopla o papel do agente do `model_adapter` (`"local-deterministic"`, `"mcp-worker"`, ou adaptadores externos).
 
-### 2.3. MCP Gateway (`backend/mcp_gateway.h` / `backend/mcp_gateway.c`)
+### 2.3. MCP Gateway (`backend/integrations/mcp_gateway.h` / `backend/integrations/mcp_gateway.c`)
 - Implementa o protocolo **Model Context Protocol (`2025-03-26`)** sobre JSON-RPC 2.0 nos transportes:
   - **`stdio`**: processo filho POSIX via `pipe()`, `fork()`, `dup2()`, `execl()`, leitura não-bloqueante com `poll()` a cada 15 ms para verificação de `timeout_ms` e `cancel_flag`, envio de `notifications/cancelled` em caso de cancelamento/timeout, descarte seguro de respostas órfãs por correlação de `id` JSON-RPC e encerramento limpo (`SIGTERM` → `waitpid` → `SIGKILL`).
   - **`http`**: socket TCP POSIX não-bloqueante com `poll()`, cabeçalhos `Content-Type: application/json`, `Accept: application/json, text/event-stream`, suporte a sessão `Mcp-Session-Id` e leitura de token de autenticação via variável de ambiente (`getenv(auth_env_var)`) **sem jamais armazenar ou registrar o segredo em memória persistente ou logs**.
