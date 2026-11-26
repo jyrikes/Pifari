@@ -3,18 +3,22 @@
 %{
 #include "frontend/ast.h"
 #include "parser.tab.h"
+#include "frontend/diagnostics.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 int yycolumn = 1;
+static int source_line = 1, lex_fatal = 0;
+static int comment_line = 1, comment_column = 1;
 static int indent_stack[256] = {0}, indent_top = 0, pending_dedents = 0, brace_depth = 0;
 static int rawlex(void);
 #define YY_DECL static int rawlex(void)
 #define YY_USER_INIT BEGIN(BOL);
 #define YY_USER_ACTION                                                                             \
     do {                                                                                           \
-        yylloc.first_line = yylineno;                                                              \
-        yylloc.last_line = yylineno;                                                               \
+        if (pifari_frontend_errors >= PIFARI_MAX_ERRORS) return 0;                                 \
+        yylloc.first_line = source_line;                                                           \
+        yylloc.last_line = source_line;                                                            \
         yylloc.first_column = yycolumn;                                                            \
         yylloc.last_column = yycolumn + yyleng - 1;                                                \
         yycolumn += yyleng;                                                                        \
@@ -41,12 +45,13 @@ static int indentation(const char *s, int n) {
         }
     }
     if (sp && tb) {
-        fprintf(stderr, "Pifari:%d: indentação mistura espaços e tabulações\n", yylineno);
-        exit(1);
+        pifari_diagnostic("léxico", source_line, 1, "indentação mistura espaços e tabulações");
     }
     return col;
 }
 int yylex(void) {
+    if (lex_fatal || pifari_frontend_errors >= PIFARI_MAX_ERRORS)
+        return 0;
     if (pending_dedents > 0) {
         pending_dedents--;
         return DEDENT;
@@ -58,32 +63,34 @@ ID [A-Za-z_][A-Za-z0-9_]*
 INT [0-9]+
 FLOATN ([0-9]+\.[0-9]*|\.[0-9]+)([eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+
 STR (\"([^\\\"\n]|\\.)*\"|'([^\\'\n]|\\.)*')
+BADSTR (\"([^\\\"\n]|\\.)*\\?|'([^\\'\n]|\\.)*\\?)
 %%
+<BOL>[ \t]*\r?\n {source_line++;yycolumn=1;return NEWLINE;}
+<BOL>[ \t]*"@"[^\n]* {yycolumn=yylloc.first_column;yyless(0);BEGIN(INITIAL);}
 <BOL>[ \t]+ {
  if(brace_depth>0){BEGIN(INITIAL);}
  else {
  int col=indentation(yytext,yyleng);
  if(col>indent_stack[indent_top]) {
-   if(indent_top>=255){fprintf(stderr,"Pifari:%d: blocos aninhados demais\n",yylineno);exit(1);}
+   if(indent_top>=255){pifari_diagnostic("léxico",source_line,1,"blocos aninhados demais");lex_fatal=1;return 0;}
    indent_stack[++indent_top]=col; BEGIN(INITIAL); return INDENT;
  }
  if(col<indent_stack[indent_top]) {
    while(indent_top>0&&col<indent_stack[indent_top]){indent_top--;pending_dedents++;}
-   if(col!=indent_stack[indent_top]){fprintf(stderr,"Pifari:%d: nível de indentação inconsistente\n",yylineno);exit(1);}
+   if(col!=indent_stack[indent_top]){pifari_diagnostic("léxico",source_line,1,"nível de indentação inconsistente");}
    BEGIN(INITIAL);
    if(pending_dedents){pending_dedents--;return DEDENT;}
  }
  BEGIN(INITIAL);
  }
 }
-<BOL>\n {yycolumn=1;return NEWLINE;}
-<BOL>. { if(brace_depth>0){BEGIN(INITIAL);yyless(0);} else {if(indent_stack[indent_top]>0){while(indent_top>0){indent_top--;pending_dedents++;} BEGIN(INITIAL); yyless(0); if(pending_dedents){pending_dedents--;return DEDENT;} } BEGIN(INITIAL); yyless(0);} }
-<INITIAL>\n {yycolumn=1;BEGIN(BOL);return NEWLINE;}
-<INITIAL>"@\"\"\"" {BEGIN(COMMENT);}
+<BOL>. { yycolumn=yylloc.first_column; if(brace_depth>0){BEGIN(INITIAL);yyless(0);} else {if(indent_stack[indent_top]>0){while(indent_top>0){indent_top--;pending_dedents++;} BEGIN(INITIAL); yyless(0); if(pending_dedents){pending_dedents--;return DEDENT;} } BEGIN(INITIAL); yyless(0);} }
+<INITIAL>\r?\n {source_line++;yycolumn=1;BEGIN(BOL);return NEWLINE;}
+<INITIAL>"@\"\"\"" {comment_line=yylloc.first_line;comment_column=yylloc.first_column;BEGIN(COMMENT);}
 <COMMENT>"\"\"\"@" {BEGIN(INITIAL);}
-<COMMENT>\n {yycolumn=1;}
+<COMMENT>\n {source_line++;yycolumn=1;}
 <COMMENT>. {}
-<INITIAL>"@"[^\n]* {}
+<INITIAL>"@"[^\n]* {if(yyleng>=4&&!strncmp(yytext,"@\"\"\"",4)){comment_line=yylloc.first_line;comment_column=yylloc.first_column;yyless(4);yycolumn=yylloc.first_column+4;BEGIN(COMMENT);}}
 <INITIAL>"#include" {return INCLUDE;}
 <INITIAL>"Link" {return LINK;}
 <INITIAL>"to" {return TO;}
@@ -139,9 +146,10 @@ STR (\"([^\\\"\n]|\\.)*\"|'([^\\'\n]|\\.)*')
 <INITIAL>{FLOATN} {yylval.str=copy_text(yytext,yyleng);return FLOAT;}
 <INITIAL>{INT} {yylval.str=copy_text(yytext,yyleng);return INTEGER;}
 <INITIAL>{STR} {yylval.str=copy_text(yytext+1,yyleng-2);return STRING;}
+<INITIAL>{BADSTR} {pifari_diagnostic("léxico",yylloc.first_line,yylloc.first_column,"texto não terminado");return YYerror;}
 <INITIAL>{ID} {yylval.str=copy_text(yytext,yyleng);return IDENTIFIER;}
-<INITIAL>[ \t\r]+ {}
-<INITIAL>. {fprintf(stderr,"Pifari:%d:%d: caractere inesperado '%s'\n",yylineno,yycolumn-yyleng,yytext);exit(1);}
-<INITIAL,BOL><<EOF>> {while(indent_top>0){indent_top--;pending_dedents++;}if(pending_dedents){pending_dedents--;return DEDENT;}return 0;}
-<COMMENT><<EOF>> {fprintf(stderr,"Pifari:%d: comentário multilinha não terminado\n",yylineno);return 1;}
+<INITIAL>[ \t]+ {}
+<INITIAL>. {char message[96];snprintf(message,sizeof(message),"caractere inesperado '%s'",yytext);pifari_diagnostic("léxico",yylloc.first_line,yylloc.first_column,message);}
+<INITIAL,BOL><<EOF>> {yylloc.first_line=yylloc.last_line=source_line;yylloc.first_column=yylloc.last_column=yycolumn;while(indent_top>0){indent_top--;pending_dedents++;}if(pending_dedents){pending_dedents--;return DEDENT;}return 0;}
+<COMMENT><<EOF>> {pifari_diagnostic("léxico",comment_line,comment_column,"comentário multilinha não terminado");BEGIN(INITIAL);return YYerror;}
 %%

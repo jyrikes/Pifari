@@ -122,7 +122,7 @@ clean:
 test-gpu: pifari
 	./pifari examples/gpu_dispositivos.pif
 
-test-core: pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent_runtime
+test-core: test-errors pifari test_optimizer test_ast_ir test_dirac test_native_kernel test_agent_runtime
 	./$(BIN_DIR)/test_optimizer
 	./$(BIN_DIR)/test_ast_ir
 	./$(BIN_DIR)/test_dirac
@@ -214,3 +214,7 @@ test-equiv: pifari
 
 test-golden: pifari
 	sh tests/golden.sh examples/gpu_dispositivos.pif examples/carga_fluxo_puro.pif examples/benchmarks/benchmark_fused_chain.pif examples/teste_cliente_servidor_mcp_pifari.pif examples/prototipo_multiagente_mcp.pif examples/mlp_xor_fluxo.pif examples/mlp_xor.pif examples/paralelismo_assincrono.pif examples/nova_sintaxe_fluxo.pif examples/funcoes.pif examples/conc_tarefas.pif examples/conc_processos.pif examples/conc_fluxos.pif examples/fluxo_sincronizacao.pif examples/fluxo_coleta.pif examples/fluxo_paralelo.pif examples/fluxo_sequencial.pif examples/runtime_fluxo.pif examples/runtime_slots_pool.pif examples/runtime_otimizacoes.pif examples/runtime_matmul.pif examples/runtime_matriz.pif examples/runtime_indexed_native.pif examples/typed_arrays.pif examples/runtime_fused_chain.pif examples/runtime_vm_index_compare.pif examples/runtime_vm.pif examples/runtime_operadores.pif examples/runtime_lista.pif examples/teste_range_preguicoso.pif examples/runtime_numeric_tools.pif examples/runtime_fusion.pif examples/runtime_map_fused.pif examples/reducao_nativa.pif
+
+.PHONY: test-errors
+test-errors: pifari
+	python3 tests/test_error_recovery.py

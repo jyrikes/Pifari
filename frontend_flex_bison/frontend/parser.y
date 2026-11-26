@@ -4,11 +4,22 @@
 #include "frontend/ast.h"
 #include "backend/runtime.h"
 #include "backend/typecheck.h"
+#include "frontend/diagnostics.h"
 int yylex(void);
+int yylex_destroy(void);
 void yyerror(const char *s);
 extern int yylineno, yycolumn;
 extern FILE *yyin;
 Node *pifari_root = NULL;
+int pifari_frontend_errors = 0;
+void pifari_diagnostic(const char *phase, int line, int column, const char *message) {
+    if (pifari_frontend_errors >= PIFARI_MAX_ERRORS)
+        return;
+    pifari_frontend_errors++;
+    fprintf(stderr, "Pifari:%d:%d: erro %s: %s\n", line, column, phase, message);
+    if (pifari_frontend_errors == PIFARI_MAX_ERRORS)
+        fprintf(stderr, "Pifari: limite de %d erros atingido; análise interrompida\n", PIFARI_MAX_ERRORS);
+}
 static Node *as_block(Node *items, int l, int c) {
     Node *b = node_new("Block", NULL, l, c);
     if (items) {
@@ -33,9 +44,12 @@ static char *join_path(char *a, char *b) {
 }
 %}
 %define parse.error detailed
+%define parse.lac full
 %expect 7 /* conflitos shift/reduce conhecidos; gramática ainda em refinamento */
 %locations
 %union { char *str; Node *node; }
+%destructor { free($$); } <str>
+%destructor { node_free($$); } <node>
 %token <str> IDENTIFIER STRING INTEGER FLOAT TYPE
 %token TRUE FALSE NULLVAL
 %token IF ELSE ELSEIF FOR IN RETURN BREAK CONTINUE IMPORT LINK TO INCLUDE FUNCTION SPAWN AWAIT
@@ -61,10 +75,12 @@ static char *join_path(char *a, char *b) {
 %precedence SPAWN
 %start program
 %%
-program: lines {pifari_root=node_new("Program",NULL,@1.first_line,@1.first_column);if($1){for(size_t i=0;i<$1->count;i++)node_add(pifari_root,$1->children[i]);free($1->children);free($1->kind);free($1->value);free($1);}};
+/* main owns the root; the start-symbol destructor must not free it. */
+program: lines {pifari_root=$1;free($1->kind);$1->kind=pifari_strdup("Program");$$=NULL;};
 lines: %empty {$$=node_new("Statements",NULL,@$.first_line,@$.first_column);}
  | lines NEWLINE {$$=$1;}
  | lines statement {$$=node_add($1,$2);}
+ | lines error NEWLINE {$$=$1;yyerrok;}
 ;
 statement: simple_statement {$$=$1;} | compound_statement {$$=$1;};
 simple_statement:
@@ -116,6 +132,8 @@ compound_statement:
 ;
 suite: NEWLINE INDENT lines DEDENT {$$=as_block($3,@1.first_line,@1.first_column);}
  | LBRACE lines RBRACE {$$=as_block($2,@1.first_line,@1.first_column);}
+ | NEWLINE INDENT lines error DEDENT {$$=as_block($3,@1.first_line,@1.first_column);yyerrok;}
+ | LBRACE lines error RBRACE {$$=as_block($2,@1.first_line,@1.first_column);yyerrok;}
 ;
 expr:
  primary {$$=$1;}
@@ -158,18 +176,29 @@ primary:
  | LBRACKET arguments_opt RBRACKET {$$=node_pair("List",NULL,$2,NULL,@1.first_line,@1.first_column);}
  | IDENTIFIER LPAREN arguments_opt RPAREN {$$=node_pair("Call",$1,$3,NULL,@1.first_line,@1.first_column);free($1);}
  | TYPE LPAREN arguments_opt RPAREN {$$=node_pair("Call",$1,$3,NULL,@1.first_line,@1.first_column);free($1);}
+ /* Local phrase recovery: discard the damaged expression, keep its boundary. */
+ | LPAREN error RPAREN {$$=node_new("Error",NULL,@1.first_line,@1.first_column);yyerrok;}
+ | LBRACKET error RBRACKET {$$=node_new("Error",NULL,@1.first_line,@1.first_column);yyerrok;}
+ | IDENTIFIER LPAREN error RPAREN {free($1);$$=node_new("Error",NULL,@1.first_line,@1.first_column);yyerrok;}
+ | TYPE LPAREN error RPAREN {free($1);$$=node_new("Error",NULL,@1.first_line,@1.first_column);yyerrok;}
+ /* A newline also stops local recovery when the closing delimiter is absent. */
+ | LPAREN error NEWLINE {$$=node_new("Error",NULL,@1.first_line,@1.first_column);yyerrok;}
+ | LBRACKET error NEWLINE {$$=node_new("Error",NULL,@1.first_line,@1.first_column);yyerrok;}
+ | IDENTIFIER LPAREN error NEWLINE {free($1);$$=node_new("Error",NULL,@1.first_line,@1.first_column);yyerrok;}
+ | TYPE LPAREN error NEWLINE {free($1);$$=node_new("Error",NULL,@1.first_line,@1.first_column);yyerrok;}
 ;
 parameters_opt: %empty {$$=node_new("Parameters",NULL,@$.first_line,@$.first_column);} | parameters {$$=$1;};
 param: IDENTIFIER {$$=node_new("Name",$1,@1.first_line,@1.first_column);free($1);} | IDENTIFIER COLON type_expr {$$=node_pair("Param",$1,$3,NULL,@1.first_line,@1.first_column);free($1);};
 parameters: param {$$=node_add(node_new("Parameters",NULL,@1.first_line,@1.first_column),$1);} | parameters COMMA param {$$=node_add($1,$3);};
-arguments_opt: %empty {$$=node_new("Arguments",NULL,@$.first_line,@$.first_column);} | arguments {$$=$1;};
+arguments_opt: %empty {$$=node_new("Arguments",NULL,@$.first_line,@$.first_column);} | arguments {$$=$1;}
+ | arguments COMMA {pifari_diagnostic("sintático",@2.first_line,@2.first_column,"expressão ausente após ','");$$=$1;}
+;
 arguments: expr {$$=node_add(node_new("Arguments",NULL,@1.first_line,@1.first_column),$1);} | arguments COMMA expr {$$=node_add($1,$3);};
 type_expr: TYPE {$$=node_new("Type",$1,@1.first_line,@1.first_column);free($1);} | IDENTIFIER {$$=node_new("Type",$1,@1.first_line,@1.first_column);free($1);};
 %%
 
 void yyerror(const char *s) {
-    fprintf(stderr, "Pifari:%d:%d: erro sintático: %s\n", yylloc.first_line, yylloc.first_column,
-            s);
+    pifari_diagnostic("sintático", yylloc.first_line, yylloc.first_column, s);
 }
 int main(int argc, char **argv) {
     int check_mode = 0;
@@ -190,7 +219,7 @@ int main(int argc, char **argv) {
     }
     int parsed = yyparse();
     int status = 1;
-    if (parsed == 0 && pifari_root) {
+    if (parsed == 0 && pifari_root && pifari_frontend_errors == 0) {
         if (check_mode) {
             int errors = pifari_typecheck_program(pifari_root);
             status = errors ? 2 : 0;
@@ -199,5 +228,6 @@ int main(int argc, char **argv) {
     }
     node_free(pifari_root);
     fclose(yyin);
+    yylex_destroy();
     return status;
 }

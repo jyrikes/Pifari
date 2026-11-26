@@ -35,3 +35,66 @@ frontend_flex_bison/.env.local
 /frontend_flex_bison/test_agent_runtime
 /frontend_flex_bison/**/__pycache__/
 /backup-organizacao-*/
+
+/frontend_flex_bison/docs/superpowers/
+/frontend_flex_bison/docs/V1_READINESS.md
+/frontend_flex_bison/dashboard/telemetry_latest.json
+.agents/
+.codex/
+.claude/
+.gemini/
+# Prerequisites
+*.d
+
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Linker output
+*.ilk
+*.map
+*.exp
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Libraries
+*.lib
+*.a
+*.la
+*.lo
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# Debug files
+*.dSYM/
+*.su
+*.idb
+*.pdb
+
+# Kernel Module Compile Results
+*.mod*
+*.cmd
+.tmp_versions/
+modules.order
+Module.symvers
+Mkfile.old
+dkms.conf
+
+# debug information files
+*.dwo

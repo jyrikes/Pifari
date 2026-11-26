@@ -361,3 +361,10 @@ O script regenera o catálogo e abre o site em localhost. O catálogo exclui o `
 ## Tutorial interativo
 
 [Tutorial do básico ao avançado](docs/tutorial-pifari/dist/index.html) — aulas, exemplos e exercícios. Os arquivos de estilo, navegação e conteúdo ficam em `docs/tutorial-pifari/dist/assets/`.
+
+## Recuperação de erros (hotfix)
+
+O frontend acumula diagnósticos com recuperação léxica, modo pânico por linha/bloco,
+recuperação local de expressões e uma produção para vírgula sem argumento.
+Programas com erros não são executados. Consulte [técnicas, limites e testes](docs/RECUPERACAO_ERROS.md).
+Execute `make test-errors`; o alvo também integra `make test-core`.
