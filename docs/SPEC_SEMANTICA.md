@@ -1,7 +1,7 @@
 # SPEC_SEMANTICA — semântica observável do Pifari
 
 Versão 1.0 (F0). Normativo. Complementa `SPEC_CONCORRENCIA.md` (fluxos, tarefas,
-dispositivos) e a `Definicao_Pifari_v3.tex` (visão geral).
+dispositivos) e a `especificacao/Definicao_Pifari_v3.tex` (visão geral).
 
 **Regra superior:** o otimizador só pode mudar **tempo**. Saída, ordem de efeitos,
 mensagens de erro e código de saída são observáveis e não podem mudar entre

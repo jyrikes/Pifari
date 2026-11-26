@@ -1,6 +1,6 @@
 # SPEC_CONCORRENCIA — Semântica normativa de fluxos, tarefas e dispositivos
 
-Versão 1.0 — decisão de projeto que fecha a divergência entre `Definicao_Pifari_v3.tex`
+Versão 1.0 — decisão de projeto que fecha a divergência entre `especificacao/Definicao_Pifari_v3.tex`
 (§224–246) e a implementação de referência (`backend/runtime.c`).
 
 Convenção de termos: **DEVE** (requisito), **NÃO DEVE** (proibição), **PODE** (opcional),

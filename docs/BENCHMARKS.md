@@ -41,7 +41,7 @@
 ## 3. Comandos para Reproduzir
 
 ```bash
-# No WSL (Ubuntu-24.04) dentro de frontend_flex_bison:
+# No WSL (Ubuntu-24.04) dentro de Pifari:
 make clean && make -j2
 ./pifari examples/carga_fluxo_puro.pif
 python3 examples/benchmarks/benchmark_mlp_xor.py

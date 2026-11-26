@@ -56,7 +56,7 @@ Executado em 2026-10-19:
 
 ## Como repetir
 
-Na raiz `frontend_flex_bison`:
+Na raiz `Pifari`:
 
 ```bash
 make clean && make -j2
